@@ -60,7 +60,7 @@ class MavenArtifactResolver {
         try {
                 String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
                     + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
-                String output = mavenInvoker.run(projectRoot, List.of("mvn", "-f", projectPom.toString(),
+                String output = mavenInvoker.run(projectRoot, List.of("mvn", "-U", "-f", projectPom.toString(),
                     "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
                     "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
             if (!Files.isRegularFile(jar)) {
@@ -90,6 +90,7 @@ class MavenArtifactResolver {
         try {
             List<String> entries = new ArrayList<>();
             entries.add("mvn");
+            entries.add("-U");
             entries.add("-f");
             entries.add(projectPom.toString());
             entries.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");

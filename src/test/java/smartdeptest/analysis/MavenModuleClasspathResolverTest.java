@@ -48,6 +48,7 @@ class MavenModuleClasspathResolverTest {
         assertEquals(1, invocations.size());
         assertEquals(project.toAbsolutePath().normalize(), invocations.get(0).workingDirectory());
         List<String> arguments = invocations.get(0).arguments();
+        assertTrue(arguments.contains("-U"));
         assertEquals(rootPom.toAbsolutePath().normalize().toString(),
                 arguments.get(arguments.indexOf("-f") + 1));
         assertEquals("sponge", arguments.get(arguments.indexOf("-pl") + 1));

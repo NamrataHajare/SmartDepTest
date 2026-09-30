@@ -55,6 +55,7 @@ class MavenArtifactResolverTest {
         assertEquals(3, invocations.size());
         for (Invocation invocation : invocations) {
             assertEquals(project.toAbsolutePath().normalize(), invocation.workingDirectory());
+            assertTrue(invocation.arguments().contains("-U"));
             int pomOption = invocation.arguments().indexOf("-f");
             assertEquals(modulePom.toAbsolutePath().normalize().toString(),
                     invocation.arguments().get(pomOption + 1));

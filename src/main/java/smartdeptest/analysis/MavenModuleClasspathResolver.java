@@ -73,6 +73,7 @@ class MavenModuleClasspathResolver {
                                    List<String> selectionArguments) throws IOException {
         List<String> command = new ArrayList<>();
         command.add("mvn");
+        command.add("-U");
         command.add("-f");
         command.add(pomFile.toString());
         command.addAll(selectionArguments);
