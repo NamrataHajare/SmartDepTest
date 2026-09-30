@@ -1,44 +1,65 @@
-# SmartDepTest Component 1
+# SmartDepTest: Dependency and API Impact Analysis
 
-Automatic Maven dependency change detection from Git history.
+SmartDepTest finds a Maven dependency change, compares the dependency's old and new public APIs, and checks whether Java application source uses potentially incompatible APIs.
+
+## In simple terms
+
+1. Enter the path to a Maven project that is a Git repository.
+2. The program finds its `pom.xml` files.
+3. It searches first-parent Git history for commits that changed those files.
+4. For each commit, it compares the POM before and after that commit.
+5. It compares old/new dependency JAR APIs.
+6. It checks changed APIs against application source and reports evidence-based potential impact.
+
+**Important:** it does not always compare only the two newest commits. It skips POM commits that do not change a dependency and keeps searching older POM-changing commits until it finds a dependency change or reaches the available history.
+
+## Requirements
+
+- JDK 21 or newer with the Java compiler available.
+- Maven available as `mvn` in `PATH`.
+- Git available in `PATH` for Component 1.
+- Network access only when a required artifact or Maven plugin is not already cached locally.
 
 ## Build and test
 
-From PowerShell:
+Run these commands from the project folder in PowerShell:
 
 ```powershell
-cd "C:\Users\HP\OneDrive\Desktop\Documents\Mega Project\SmartDepTest\SmartDepTestComponent1"
 mvn test
 ```
 
-If Maven is not on `PATH`, use the Maven installation directly:
+If Maven is not on `PATH`, run it using its full path:
 
 ```powershell
 & "C:\Program Files\apache-maven-3.9.16\bin\mvn.cmd" test
 ```
 
-The test suite covers unchanged, added, removed, updated, multiple-update, scope, property-version, dependency-management, multi-module, invalid-POM, Git commit selection, and no-change cases.
+Tests include dependency-history detection and offline synthetic-JAR tests for API changes, actual method usage, multi-module source, and impact classification. Test JARs are generated locally; they do not access Maven Central.
 
-## Run
+## Run the program
 
 ```powershell
 mvn package
 java -cp target/classes smartdeptest.Main
 ```
 
-For a large repository such as QuickFIX/J, Git commands use a 120-second timeout by default. Increase it when needed:
+When prompted, enter the path to the Maven Git project you want to inspect. The existing Component 1 report appears first; API and application-impact analysis follows it.
+
+The analyzer checks `~/.m2/repository` first. If an old or new dependency JAR is missing, it asks Maven to retrieve only that artifact. For semantic application analysis, it asks Maven for each module's compile classpath. The analyzed project's `pom.xml` and working-tree source files are not modified, and the application is not executed.
+
+For a large repository, increase the Git command timeout from its 120-second default:
 
 ```powershell
 java -Dsmartdeptest.git.timeout.seconds=300 -cp target/classes smartdeptest.Main
 ```
 
-The program prompts only for the project directory. It verifies Git, discovers POM files recursively, checks the 10 most recent checked-out-branch commits affecting those POM files, and stops at the newest commit containing a structural dependency change. It then reads that commit's immediate parent, parses both POM versions, and prints a structured report. The bounded 10-commit window avoids scanning the complete repository history while still handling release/version commits immediately before a dependency update.
+## Pipeline guides
 
-## Design notes
+- [Architecture guide](docs/architecture/README.md): Component 1–3 responsibilities and source map.
+- [Detailed design guide](docs/detailed-design/README.md): Git detection, API comparison, source usage, and impact rules.
 
-- `Dependency` is the handoff model for later components and preserves groupId, artifactId, resolved version, scope, type, classifier, optional, POM path, and dependency-management status.
-- `DependencyChange` preserves old/new versions and metadata plus both commit IDs and the changed POM path.
-- `DependencyChangeResult` is the complete Component 1 output.
-- XML is parsed with JDK DOM APIs and external entities/DOCTYPEs are disabled.
-- Local `${property}` values and local dependency-management versions are resolved. Maven parent inheritance, profiles, BOM imports, and complete Maven interpolation are intentionally outside this first component.
-- No API analysis, application graph, impact analysis, test mapping, or regression selection is included.
+## Current limits
+
+The Component 1 parser resolves properties declared in the same POM and versions declared in that POM's dependency management. It does not build Maven's complete effective POM, so parent inheritance, profiles, and imported BOMs are not included. API impact analysis supports JAR dependencies and standard Maven `src/main/java` source roots. It is static evidence, not a runtime or test result, and it does not select regression tests.
+
+The history search has no fixed commit-count limit. A shallow Git clone only contains part of the history; if no change is found in the available portion, the program asks you to fetch more history.

@@ -38,12 +38,47 @@ public final class GitRepositoryAnalyzer {
         arguments.add("log");
         arguments.add("--first-parent");
         arguments.add("--no-renames");
-        arguments.add("--max-count=10");
         arguments.add("--format=%H");
         arguments.add("--");
         arguments.addAll(pomFiles);
         String output = runGit(arguments.toArray(String[]::new));
         return Arrays.stream(output.split("\\R")).map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
+    }
+
+    public List<CommitCandidate> historyCandidates(List<String> pomFiles) throws IOException {
+        List<String> arguments = new ArrayList<>();
+        arguments.add("log");
+        arguments.add("--first-parent");
+        arguments.add("--no-renames");
+        arguments.add("--diff-merges=first-parent");
+        arguments.add("--format=commit:%H%x09%P");
+        arguments.add("--name-only");
+        arguments.add("--");
+        arguments.addAll(pomFiles);
+        String output = runGit(arguments.toArray(String[]::new));
+
+        List<CommitCandidate> candidates = new ArrayList<>();
+        String commitId = null;
+        String parentId = null;
+        List<String> changedPomFiles = new ArrayList<>();
+        for (String line : output.split("\\R")) {
+            if (line.startsWith("commit:")) {
+                if (commitId != null) {
+                    candidates.add(new CommitCandidate(commitId, parentId, changedPomFiles));
+                }
+                String[] metadata = line.substring("commit:".length()).split("\\t", 2);
+                commitId = metadata[0].trim();
+                String[] parents = metadata.length < 2 ? new String[0] : metadata[1].trim().split("\\s+");
+                parentId = parents.length == 0 || parents[0].isBlank() ? null : parents[0];
+                changedPomFiles = new ArrayList<>();
+            } else if (commitId != null && !line.isBlank()) {
+                changedPomFiles.add(line.trim().replace('\\', '/'));
+            }
+        }
+        if (commitId != null) {
+            candidates.add(new CommitCandidate(commitId, parentId, changedPomFiles));
+        }
+        return candidates;
     }
 
     public String firstParent(String commit) throws IOException {
@@ -54,6 +89,10 @@ public final class GitRepositoryAnalyzer {
     }
 
     public String commitMessage(String commit) throws IOException { return runGit("show", "-s", "--format=%s", commit).trim(); }
+
+    public boolean isShallowRepository() throws IOException {
+        return "true".equalsIgnoreCase(runGit("rev-parse", "--is-shallow-repository").trim());
+    }
 
     public List<String> changedPomFiles(String parent, String commit, List<String> pomFiles) throws IOException {
         List<String> arguments = new ArrayList<>();
@@ -108,6 +147,12 @@ public final class GitRepositoryAnalyzer {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("Git command was interrupted.", exception);
+        }
+    }
+
+    public record CommitCandidate(String commitId, String firstParentId, List<String> changedPomFiles) {
+        public CommitCandidate {
+            changedPomFiles = changedPomFiles.stream().distinct().sorted().toList();
         }
     }
 

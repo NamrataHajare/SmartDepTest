@@ -1,5 +1,11 @@
 package smartdeptest;
 
+import smartdeptest.analysis.APIChangeAnalyzer;
+import smartdeptest.analysis.APIChangeResult;
+import smartdeptest.analysis.APIUsageAnalyzer;
+import smartdeptest.analysis.APIUsageResult;
+import smartdeptest.analysis.ApiChange;
+import smartdeptest.analysis.DependencyApiResult;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeDetector;
 import smartdeptest.dependency.DependencyChangeResult;
@@ -27,6 +33,9 @@ public final class Main {
         try {
             DependencyChangeResult result = new DependencyChangeDetector().detect(project);
             printReport(result);
+            APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(result);
+            APIUsageResult usage = new APIUsageAnalyzer().analyze(apiChanges, project);
+            printImpactReport(apiChanges, usage);
         } catch (Exception exception) {
             String message = exception.getMessage();
             if (message != null && message.contains("not a git repository")) {
@@ -87,5 +96,54 @@ public final class Main {
         System.out.println("Other dependency changes: " + other);
         System.out.println();
         System.out.println("Dependency Change Detection Completed");
+    }
+
+    private static void printImpactReport(APIChangeResult apiChanges, APIUsageResult usage) {
+        System.out.println();
+        System.out.println("------------------------------------------------------------");
+        System.out.println("DEPENDENCY API CHANGES");
+        System.out.println("------------------------------------------------------------");
+        for (DependencyApiResult dependency : apiChanges.dependencies()) {
+            System.out.println();
+            System.out.println("Dependency: " + dependency.dependencyKey());
+            System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
+            if (dependency.status() == DependencyApiResult.Status.UNAVAILABLE) {
+                System.out.println("API analysis: ANALYSIS_UNAVAILABLE");
+                System.out.println("Reason: " + dependency.message());
+                continue;
+            }
+            if (dependency.changes().isEmpty()) {
+                System.out.println("No public/protected API changes detected.");
+            }
+            for (ApiChange change : dependency.changes()) {
+                System.out.println("[" + change.kind() + "] " + change.className()
+                        + (change.memberName().isBlank() ? "" : "." + change.memberName()));
+                if (!change.oldSignature().isBlank()) System.out.println("  Old: " + change.oldSignature());
+                if (!change.newSignature().isBlank()) System.out.println("  New: " + change.newSignature());
+            }
+        }
+
+        System.out.println();
+        System.out.println("------------------------------------------------------------");
+        System.out.println("APPLICATION API USAGE AND POTENTIAL IMPACT");
+        System.out.println("------------------------------------------------------------");
+        for (APIUsageResult.DependencyImpact dependency : usage.dependencies()) {
+            System.out.println();
+            System.out.println("Dependency: " + dependency.dependencyKey());
+            System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
+            System.out.println("Impact: " + dependency.classification());
+            if (!dependency.message().isBlank()) System.out.println("Analysis note: " + dependency.message());
+            for (APIUsageResult.UsageFinding finding : dependency.findings()) {
+                System.out.println("API: " + finding.change().className()
+                        + (finding.change().memberName().isBlank() ? "" : "." + finding.change().memberName()));
+                System.out.println("Usage: " + (finding.used() ? "USED" : "NOT_FOUND"));
+                for (APIUsageResult.UsageLocation location : finding.locations()) {
+                    System.out.println("  " + location.className() + "." + location.methodName());
+                    System.out.println("  Source: " + location.sourcePath() + ":" + location.line());
+                }
+            }
+        }
+        System.out.println();
+        System.out.println("Impact describes static-analysis evidence only; it does not claim a runtime failure.");
     }
 }

@@ -67,6 +67,17 @@ class Component1Test {
     }
 
     @Test
+    void unrelatedPropertyChangeDoesNotChangeDependency() throws Exception {
+        String dependency = dependencyWithVersion("a", "${library.version}", "compile");
+        String oldPom = "<project><properties><library.version>1.0</library.version><build.flag>old</build.flag>"
+                + "</properties><dependencies>" + dependency + "</dependencies></project>";
+        String newPom = "<project><properties><library.version>1.0</library.version><build.flag>new</build.flag>"
+                + "</properties><dependencies>" + dependency + "</dependencies></project>";
+
+        assertEquals(0, changes(parse(oldPom, "pom.xml"), parse(newPom, "pom.xml")).size());
+    }
+
+    @Test
     void multiModulePomPathsRemainDistinct() throws Exception {
         Map<String, Dependency> root = parse(pom(dependency("a", "1", "compile")), "pom.xml");
         Map<String, Dependency> module = parse(pom(dependency("a", "2", "compile")), "module/pom.xml");
@@ -96,6 +107,21 @@ class Component1Test {
                 + "</dependencies></dependencyManagement></project>";
         Dependency dependency = parser.parse(xml, "pom.xml").values().iterator().next();
         assertEquals(true, dependency.isDependencyManagement());
+    }
+
+    @Test
+    void dependencyManagementVersionUpdateIsDetected() throws Exception {
+        String oldPom = "<project><dependencyManagement><dependencies>"
+                + dependency("a", "1.0", "compile") + "</dependencies></dependencyManagement></project>";
+        String newPom = "<project><dependencyManagement><dependencies>"
+                + dependency("a", "2.0", "compile") + "</dependencies></dependencyManagement></project>";
+
+        DependencyChange change = changes(parse(oldPom, "pom.xml"), parse(newPom, "pom.xml")).get(0);
+
+        assertEquals(DependencyChange.Type.UPDATED, change.getChangeType());
+        assertEquals("1.0", change.getOldVersion());
+        assertEquals("2.0", change.getNewVersion());
+        assertEquals(true, change.isDependencyManagement());
     }
 
     private Map<String, Dependency> parse(String xml, String path) throws Exception { return parser.parse(xml, path); }

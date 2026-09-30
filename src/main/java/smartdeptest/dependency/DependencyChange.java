@@ -12,6 +12,8 @@ public final class DependencyChange {
     private final String newScope;
     private final String oldType;
     private final String newType;
+    private final String oldClassifier;
+    private final String newClassifier;
     private final String pomPath;
     private final String commitId;
     private final String previousCommitId;
@@ -29,6 +31,8 @@ public final class DependencyChange {
         this.newScope = newDependency == null ? "" : newDependency.getScope();
         this.oldType = oldDependency == null ? "" : oldDependency.getType();
         this.newType = newDependency == null ? "" : newDependency.getType();
+        this.oldClassifier = oldDependency == null ? "" : oldDependency.getClassifier();
+        this.newClassifier = newDependency == null ? "" : newDependency.getClassifier();
         this.pomPath = pomPath;
         this.commitId = commitId;
         this.previousCommitId = previousCommitId;
@@ -45,6 +49,8 @@ public final class DependencyChange {
     public String getNewScope() { return newScope; }
     public String getOldType() { return oldType; }
     public String getNewType() { return newType; }
+    public String getOldClassifier() { return oldClassifier; }
+    public String getNewClassifier() { return newClassifier; }
     public String getPomPath() { return pomPath; }
     public String getCommitId() { return commitId; }
     public String getPreviousCommitId() { return previousCommitId; }

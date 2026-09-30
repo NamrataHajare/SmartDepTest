@@ -18,20 +18,21 @@ public final class DependencyChangeDetector {
         List<String> pomFiles = git.discoverPomFiles();
         if (pomFiles.isEmpty()) throw new IOException("No pom.xml files were found in the project.");
         System.out.println("      Found " + pomFiles.size() + " POM file(s).");
-        System.out.println("[3/5] Reading the 10 most recent POM-related commits...");
-        List<String> commits = git.historyCommits(pomFiles);
+        System.out.println("[3/5] Finding POM-related commits in Git history...");
+        List<GitRepositoryAnalyzer.CommitCandidate> commits = git.historyCandidates(pomFiles);
         System.out.println("      Found " + commits.size() + " POM-related commit(s).");
         System.out.println("[4/5] Inspecting commits for dependency changes...");
         int inspected = 0;
-        for (String commit : commits) {
+        for (GitRepositoryAnalyzer.CommitCandidate candidate : commits) {
             inspected++;
             if (inspected == 1 || inspected % 25 == 0) {
                 System.out.println("      Inspected " + inspected + "/" + commits.size() + " commit(s)...");
             }
-            String parent = git.firstParent(commit);
+            String commit = candidate.commitId();
+            String parent = candidate.firstParentId();
             if (parent == null) continue;
             List<DependencyChange> changes = new ArrayList<>();
-            List<String> changedPoms = git.changedPomFiles(parent, commit, pomFiles);
+            List<String> changedPoms = candidate.changedPomFiles();
             for (String pomPath : changedPoms) {
                 try {
                     String oldPom = git.readPom(parent, pomPath);
@@ -51,6 +52,10 @@ public final class DependencyChangeDetector {
             }
         }
         System.out.println("[5/5] No dependency-changing commit found.");
-        throw new IOException("No Maven dependency-changing commit was found in the inspected Git history.");
+        if (git.isShallowRepository()) {
+            throw new IOException("No Maven dependency-changing commit was found in the available Git history. "
+                    + "The repository is shallow; fetch more history and try again.");
+        }
+        throw new IOException("No Maven dependency-changing commit was found in the available Git history.");
     }
 }
