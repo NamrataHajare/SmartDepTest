@@ -43,7 +43,7 @@ final class ApplicationModuleScanner {
                         .sorted().toList();
             }
             if (javaFiles.isEmpty()) continue;
-            modules.add(new ApplicationModule(sourceRoot.getValue().getParent(), sourceRoot.getValue(),
+                modules.add(new ApplicationModule(projectRoot, sourceRoot.getValue().getParent(), sourceRoot.getValue(),
                     sourceRoot.getKey(), javaFiles));
         }
         modules.sort(Comparator.comparing(module -> module.moduleDirectory().toString()));

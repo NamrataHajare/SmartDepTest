@@ -7,14 +7,45 @@ import java.util.ArrayList;
 import java.util.List;
 
 class MavenModuleClasspathResolver {
+    private final MavenArtifactResolver.MavenInvoker mavenInvoker;
+
+    MavenModuleClasspathResolver() {
+        this(MavenCommandRunner::run);
+    }
+
+    MavenModuleClasspathResolver(MavenArtifactResolver.MavenInvoker mavenInvoker) {
+        this.mavenInvoker = mavenInvoker;
+    }
+
     List<Path> resolve(ApplicationModule module) throws IOException {
         Path output = Files.createTempFile("smartdeptest-classpath-", ".txt");
         try {
             Files.deleteIfExists(output);
-            MavenCommandRunner.run(module.moduleDirectory(), List.of("mvn", "-q", "-f",
-                    module.pomFile().toString(),
-                    "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath",
-                    "-DincludeScope=compile", "-Dmdep.outputFile=" + output));
+            IOException reactorFailure = null;
+            Path reactorPom = module.projectDirectory().resolve("pom.xml");
+            if (!reactorPom.equals(module.pomFile()) && Files.isRegularFile(reactorPom)) {
+                String moduleSelector = module.projectDirectory().relativize(module.moduleDirectory())
+                        .toString().replace('\\', '/');
+                try {
+                    runBuildClasspath(module.projectDirectory(), reactorPom, output,
+                            List.of("-pl", moduleSelector, "-am"));
+                } catch (IOException exception) {
+                    reactorFailure = exception;
+                    Files.deleteIfExists(output);
+                }
+            }
+            if (!Files.isRegularFile(output) && !Files.exists(output)) {
+                try {
+                    runBuildClasspath(module.projectDirectory(), module.pomFile(), output, List.of());
+                } catch (IOException standaloneFailure) {
+                    if (reactorFailure != null) {
+                        standaloneFailure.addSuppressed(reactorFailure);
+                    }
+                    throw new IOException("Unable to resolve Maven compile classpath for module POM "
+                            + module.pomFile() + ". Standalone Maven error: " + standaloneFailure.getMessage(),
+                            standaloneFailure);
+                }
+            }
             List<Path> entries = new ArrayList<>();
             if (Files.isRegularFile(output)) {
                 String classpath = Files.readString(output).trim();
@@ -30,6 +61,22 @@ class MavenModuleClasspathResolver {
             return entries.stream().distinct().toList();
         } finally {
             Files.deleteIfExists(output);
+        }
+    }
+
+    private void runBuildClasspath(Path workingDirectory, Path pomFile, Path output,
+                                   List<String> selectionArguments) throws IOException {
+        List<String> command = new ArrayList<>();
+        command.add("mvn");
+        command.add("-f");
+        command.add(pomFile.toString());
+        command.addAll(selectionArguments);
+        command.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
+        command.add("-DincludeScope=compile");
+        command.add("-Dmdep.outputFile=" + output);
+        mavenInvoker.run(workingDirectory, command);
+        if (!Files.isRegularFile(output)) {
+            throw new IOException("Maven completed without writing the requested classpath file: " + output);
         }
     }
 }

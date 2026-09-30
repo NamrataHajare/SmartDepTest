@@ -142,7 +142,7 @@ Stores the full result: project path, selected commit and parent, commit message
 
 - `analyze()` receives `APIChangeResult` plus the application project path.
 - `ApplicationModuleScanner` discovers standard `src/main/java` roots and associates each with its nearest `pom.xml`.
-- `MavenModuleClasspathResolver` obtains each module's compile classpath through Maven, writing the classpath to a temporary file and deleting it afterward.
+- `MavenModuleClasspathResolver` obtains each module's compile classpath through Maven. It first selects the module from the target root reactor with `-pl <module> -am`, allowing sibling SNAPSHOT projects to resolve in-reactor; it falls back to the standalone module POM if the root is not a usable reactor. The classpath is written to a temporary file and deleted afterward.
 - One JDK `JavacTask` pass per module resolves method calls, constructors, method references, field accesses, and type references against the old dependency JAR and records source path/line, class, and method. The changed artifact is included only when that module's Maven compile classpath contains its updated version.
 - `APIUsageResult` reports `POTENTIAL_IMPACT`, `NO_IDENTIFIED_IMPACT`, or `ANALYSIS_UNAVAILABLE`. Ordinary added APIs do not by themselves imply impact; a newly added abstract contract is considered only when source implements or extends its type. If semantic errors prevent proving a negative, the result is unavailable instead of no impact.
 
@@ -170,6 +170,7 @@ Stores the full result: project path, selected commit and parent, commit message
 - `src/test/java/smartdeptest/dependency/Component1Test.java` checks parsing and comparison rules.
 - `src/test/java/smartdeptest/dependency/DependencyChangeDetectorTest.java` creates small temporary Git repositories and checks commit selection.
 - `src/test/java/smartdeptest/analysis/AnalysisPipelineTest.java` creates local synthetic JARs and Java modules to check API changes, semantic usage, and impact classifications without network access.
+- `src/test/java/smartdeptest/analysis/MavenModuleClasspathResolverTest.java` verifies root-reactor module selection, `-am`, and standalone-POM fallback.
 
 Run both groups with `mvn test`.
 
