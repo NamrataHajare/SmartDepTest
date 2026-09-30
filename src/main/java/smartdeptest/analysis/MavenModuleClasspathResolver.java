@@ -73,14 +73,13 @@ class MavenModuleClasspathResolver {
                                    List<String> selectionArguments) throws IOException {
         List<String> command = new ArrayList<>();
         command.add("mvn");
-        command.add("-U");
         command.add("-f");
         command.add(pomFile.toString());
         command.addAll(selectionArguments);
         command.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
         command.add("-DincludeScope=compile");
         command.add("-Dmdep.outputFile=" + output);
-        mavenInvoker.run(workingDirectory, command);
+        MavenArtifactResolver.runWithCachedMissRetry(mavenInvoker, workingDirectory, command);
         if (!Files.isRegularFile(output)) {
             throw new IOException("Maven completed without writing the requested classpath file: " + output);
         }

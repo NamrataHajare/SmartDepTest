@@ -20,6 +20,9 @@ class MavenArtifactResolver {
 
     private static final Pattern TRANSFER_SOURCE = Pattern.compile(
             "(?m)^.*(?:Downloaded|Downloading) from ([^\\s:]+): (\\S+).*$");
+        private static final List<String> CACHED_MISS_MARKERS = List.of(
+            "failure was cached", "cached in the local repository", "previous attempt",
+            "will not be reattempted", "not reattempted until");
     private final MavenInvoker mavenInvoker;
     private final Map<String, ResolvedArtifact> resolved = new HashMap<>();
     private final Map<String, List<Path>> apiClasspaths = new HashMap<>();
@@ -60,7 +63,7 @@ class MavenArtifactResolver {
         try {
                 String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
                     + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
-                String output = mavenInvoker.run(projectRoot, List.of("mvn", "-U", "-f", projectPom.toString(),
+                String output = runWithCachedMissRetry(mavenInvoker, projectRoot, List.of("mvn", "-f", projectPom.toString(),
                     "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
                     "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
             if (!Files.isRegularFile(jar)) {
@@ -82,42 +85,66 @@ class MavenArtifactResolver {
                                    ResolvedArtifact dependencyArtifact) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
         Path projectPom = projectRoot.resolve(pomPath).normalize();
-        String cacheKey = projectPom + "|" + groupId + ":" + artifactId + ":" + version + ":" + classifier;
-        List<Path> cached = apiClasspaths.get(cacheKey);
-        if (cached != null) return cached;
+        String cacheKey = projectPom.toString();
+        List<Path> baseClasspath = apiClasspaths.get(cacheKey);
 
-        Path output = Files.createTempFile("smartdeptest-api-classpath-", ".txt");
-        try {
-            List<String> entries = new ArrayList<>();
-            entries.add("mvn");
-            entries.add("-U");
-            entries.add("-f");
-            entries.add(projectPom.toString());
-            entries.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
-            entries.add("-DincludeScope=compile");
-            entries.add("-Dmdep.outputFile=" + output);
-            mavenInvoker.run(projectRoot, entries);
+        if (baseClasspath == null) {
+            Path output = Files.createTempFile("smartdeptest-api-classpath-", ".txt");
+            try {
+                List<String> entries = new ArrayList<>();
+                entries.add("mvn");
+                entries.add("-f");
+                entries.add(projectPom.toString());
+                entries.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
+                entries.add("-DincludeScope=compile");
+                entries.add("-Dmdep.outputFile=" + output);
+                runWithCachedMissRetry(mavenInvoker, projectRoot, entries);
 
-            List<Path> classpath = new ArrayList<>();
-            classpath.add(dependencyArtifact.jar().toAbsolutePath().normalize());
-            if (Files.isRegularFile(output)) {
-                String value = Files.readString(output).trim();
-                if (!value.isBlank()) {
-                    for (String entry : value.split(Pattern.quote(java.io.File.pathSeparator))) {
-                        Path path = Path.of(entry);
-                        if (Files.exists(path)) classpath.add(path.toAbsolutePath().normalize());
+                List<Path> classpath = new ArrayList<>();
+                if (Files.isRegularFile(output)) {
+                    String value = Files.readString(output).trim();
+                    if (!value.isBlank()) {
+                        for (String entry : value.split(Pattern.quote(java.io.File.pathSeparator))) {
+                            Path path = Path.of(entry);
+                            if (Files.exists(path)) classpath.add(path.toAbsolutePath().normalize());
+                        }
                     }
                 }
+                baseClasspath = classpath.stream().distinct().toList();
+                apiClasspaths.put(cacheKey, baseClasspath);
+            } catch (IOException exception) {
+                throw new IOException("Could not resolve the API classpath for " + groupId + ":" + artifactId + ":"
+                        + version + " using target project's Maven POM " + projectPom + ". Maven error: "
+                        + exception.getMessage(), exception);
+            } finally {
+                Files.deleteIfExists(output);
             }
-            List<Path> result = classpath.stream().distinct().toList();
-            apiClasspaths.put(cacheKey, result);
-            return result;
-        } catch (IOException exception) {
-            throw new IOException("Could not resolve the API classpath for " + groupId + ":" + artifactId + ":"
-                    + version + " using target project's Maven POM " + projectPom + ". Maven error: "
-                    + exception.getMessage(), exception);
-        } finally {
-            Files.deleteIfExists(output);
+        }
+
+        List<Path> classpath = new ArrayList<>(baseClasspath);
+        classpath.add(dependencyArtifact.jar().toAbsolutePath().normalize());
+        return classpath.stream().distinct().toList();
+    }
+
+    static String runWithCachedMissRetry(MavenInvoker mavenInvoker, Path workingDirectory,
+                                         List<String> arguments) throws IOException {
+        try {
+            return mavenInvoker.run(workingDirectory, arguments);
+        } catch (IOException firstFailure) {
+            String message = firstFailure.getMessage();
+            if (message == null || CACHED_MISS_MARKERS.stream()
+                    .noneMatch(marker -> message.toLowerCase(java.util.Locale.ROOT).contains(marker))) {
+                throw firstFailure;
+            }
+            List<String> retryArguments = new ArrayList<>(arguments);
+            int mavenIndex = retryArguments.indexOf("mvn");
+            retryArguments.add(mavenIndex >= 0 ? mavenIndex + 1 : 0, "-U");
+            try {
+                return mavenInvoker.run(workingDirectory, retryArguments);
+            } catch (IOException retryFailure) {
+                retryFailure.addSuppressed(firstFailure);
+                throw retryFailure;
+            }
         }
     }
 

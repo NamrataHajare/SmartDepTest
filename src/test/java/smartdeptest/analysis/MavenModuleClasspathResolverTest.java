@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,7 +49,7 @@ class MavenModuleClasspathResolverTest {
         assertEquals(1, invocations.size());
         assertEquals(project.toAbsolutePath().normalize(), invocations.get(0).workingDirectory());
         List<String> arguments = invocations.get(0).arguments();
-        assertTrue(arguments.contains("-U"));
+        assertFalse(arguments.contains("-U"));
         assertEquals(rootPom.toAbsolutePath().normalize().toString(),
                 arguments.get(arguments.indexOf("-f") + 1));
         assertEquals("sponge", arguments.get(arguments.indexOf("-pl") + 1));
@@ -108,6 +109,37 @@ class MavenModuleClasspathResolverTest {
 
                 assertTrue(exception.getMessage().contains("Could not select module sponge"));
                 assertTrue(exception.getMessage().contains("changeskin.core:3.1-SNAPSHOT was not found"));
+        }
+
+        @Test
+        void retriesCachedClasspathFailureWithUpdateFlagOnlyOnce() throws Exception {
+                Path project = temporaryDirectory.resolve("project");
+                Path moduleDirectory = project.resolve("module-a");
+                Path sourceDirectory = moduleDirectory.resolve("src/main/java");
+                Path modulePom = moduleDirectory.resolve("pom.xml");
+                Files.createDirectories(sourceDirectory);
+                Files.writeString(project.resolve("pom.xml"), "<project/>", StandardCharsets.UTF_8);
+                Files.writeString(modulePom, "<project/>", StandardCharsets.UTF_8);
+                List<Invocation> invocations = new ArrayList<>();
+                MavenModuleClasspathResolver resolver = new MavenModuleClasspathResolver((workingDirectory, arguments) -> {
+                        invocations.add(new Invocation(workingDirectory, arguments));
+                        if (!arguments.contains("-U")) {
+                                throw new IOException("Resolution failure was cached after a previous attempt");
+                        }
+                        String outputOption = arguments.stream().filter(argument -> argument.startsWith("-Dmdep.outputFile="))
+                                        .findFirst().orElseThrow();
+                        Files.writeString(Path.of(outputOption.substring("-Dmdep.outputFile=".length())), "",
+                                        StandardCharsets.UTF_8);
+                        return "retried with update flag";
+                });
+                ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
+                                sourceDirectory, List.of());
+
+                resolver.resolve(module);
+
+                assertEquals(2, invocations.size());
+                assertFalse(invocations.get(0).arguments().contains("-U"));
+                assertTrue(invocations.get(1).arguments().contains("-U"));
         }
 
     private static Path rootPom(Path project) {

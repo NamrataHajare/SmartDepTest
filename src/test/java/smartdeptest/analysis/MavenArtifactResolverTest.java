@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -45,6 +46,8 @@ class MavenArtifactResolverTest {
                 "org.example", "sample-library", "old-version", "");
         MavenArtifactResolver.ResolvedArtifact newArtifact = resolver.resolveJar(project, "module-a/pom.xml",
                 "org.example", "sample-library", "new-version", "");
+        List<Path> oldClasspath = resolver.resolveApiClasspath(project, "module-a/pom.xml",
+            "org.example", "sample-library", "old-version", "", oldArtifact);
         List<Path> classpath = resolver.resolveApiClasspath(project, "module-a/pom.xml",
                 "org.example", "sample-library", "new-version", "", newArtifact);
 
@@ -55,7 +58,7 @@ class MavenArtifactResolverTest {
         assertEquals(3, invocations.size());
         for (Invocation invocation : invocations) {
             assertEquals(project.toAbsolutePath().normalize(), invocation.workingDirectory());
-            assertTrue(invocation.arguments().contains("-U"));
+            assertFalse(invocation.arguments().contains("-U"));
             int pomOption = invocation.arguments().indexOf("-f");
             assertEquals(modulePom.toAbsolutePath().normalize().toString(),
                     invocation.arguments().get(pomOption + 1));
@@ -65,13 +68,40 @@ class MavenArtifactResolverTest {
         assertTrue(invocations.get(0).arguments().stream().anyMatch(value -> value.startsWith("-Dartifact=")));
         assertTrue(invocations.get(0).arguments().stream().noneMatch(value -> value.contains("stripVersion")));
         assertTrue(invocations.get(2).arguments().stream().anyMatch(value -> value.endsWith(":build-classpath")));
+        assertEquals(oldArtifact.jar(), oldClasspath.get(0));
         assertEquals(newArtifact.jar(), classpath.get(0));
+    }
+
+    @Test
+    void retriesCachedMissingArtifactOnceWithMavenUpdateFlag() throws Exception {
+        Path project = createTargetProject();
+        List<Invocation> invocations = new ArrayList<>();
+        MavenArtifactResolver resolver = new MavenArtifactResolver((workingDirectory, arguments) -> {
+            invocations.add(new Invocation(workingDirectory, arguments));
+            if (!arguments.contains("-U")) {
+                throw new IOException("This failure was cached in the local repository after a previous attempt");
+            }
+            Path outputDirectory = Path.of(argumentValue(arguments, "-DoutputDirectory="));
+            Files.writeString(outputDirectory.resolve("sample-library-1.0.jar"), "synthetic jar",
+                    StandardCharsets.UTF_8);
+            return "retried with update flag";
+        });
+
+        MavenArtifactResolver.ResolvedArtifact artifact = resolver.resolveJar(project, "module-a/pom.xml",
+                "org.example", "sample-library", "1.0", "");
+
+        assertEquals(2, invocations.size());
+        assertFalse(invocations.get(0).arguments().contains("-U"));
+        assertTrue(invocations.get(1).arguments().contains("-U"));
+        assertTrue(Files.isRegularFile(artifact.jar()));
     }
 
     @Test
     void preservesMavenResolutionFailureAndCoordinate() throws Exception {
         Path project = createTargetProject();
+        List<Invocation> invocations = new ArrayList<>();
         MavenArtifactResolver resolver = new MavenArtifactResolver((workingDirectory, arguments) -> {
+            invocations.add(new Invocation(workingDirectory, arguments));
             assertEquals(project.toAbsolutePath().normalize(), workingDirectory);
             throw new IOException("[ERROR] Could not find artifact in target-custom-repository");
         });
@@ -83,6 +113,8 @@ class MavenArtifactResolverTest {
         assertTrue(exception.getMessage().contains("target-custom-repository"));
         assertTrue(exception.getMessage().contains("module-a\\pom.xml")
                 || exception.getMessage().contains("module-a/pom.xml"));
+        assertEquals(1, invocations.size());
+        assertFalse(invocations.get(0).arguments().contains("-U"));
     }
 
     private Path createTargetProject() throws IOException {
