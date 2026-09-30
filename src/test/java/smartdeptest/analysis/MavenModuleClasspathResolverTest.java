@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavenModuleClasspathResolverTest {
@@ -85,6 +86,28 @@ class MavenModuleClasspathResolverTest {
                 .get(invocations.get(1).arguments().indexOf("-f") + 1));
         assertTrue(!invocations.get(1).arguments().contains("-am"));
     }
+
+        @Test
+        void includesRootReactorAndStandaloneErrorsWhenBothFail() throws Exception {
+                Path project = temporaryDirectory.resolve("project");
+                Path moduleDirectory = project.resolve("sponge");
+                Path sourceDirectory = moduleDirectory.resolve("src/main/java");
+                Path modulePom = moduleDirectory.resolve("pom.xml");
+                Files.createDirectories(sourceDirectory);
+                Files.writeString(project.resolve("pom.xml"), "<project/>", StandardCharsets.UTF_8);
+                Files.writeString(modulePom, "<project/>", StandardCharsets.UTF_8);
+                MavenModuleClasspathResolver resolver = new MavenModuleClasspathResolver((workingDirectory, arguments) -> {
+                        if (arguments.contains("-am")) throw new IOException("[ERROR] Could not select module sponge");
+                        throw new IOException("[ERROR] changeskin.core:3.1-SNAPSHOT was not found");
+                });
+                ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
+                                sourceDirectory, List.of());
+
+                IOException exception = assertThrows(IOException.class, () -> resolver.resolve(module));
+
+                assertTrue(exception.getMessage().contains("Could not select module sponge"));
+                assertTrue(exception.getMessage().contains("changeskin.core:3.1-SNAPSHOT was not found"));
+        }
 
     private static Path rootPom(Path project) {
         return project.resolve("pom.xml").toAbsolutePath().normalize();

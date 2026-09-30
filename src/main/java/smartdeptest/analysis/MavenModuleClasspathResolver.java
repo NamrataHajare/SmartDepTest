@@ -27,10 +27,13 @@ class MavenModuleClasspathResolver {
                 String moduleSelector = module.projectDirectory().relativize(module.moduleDirectory())
                         .toString().replace('\\', '/');
                 try {
+                    System.out.println("Resolving Maven classpath through root reactor: "
+                        + reactorPom + " (module " + moduleSelector + ")...");
                     runBuildClasspath(module.projectDirectory(), reactorPom, output,
                             List.of("-pl", moduleSelector, "-am"));
                 } catch (IOException exception) {
                     reactorFailure = exception;
+                    System.out.println("Root reactor classpath resolution failed: " + summarize(exception));
                     Files.deleteIfExists(output);
                 }
             }
@@ -41,8 +44,10 @@ class MavenModuleClasspathResolver {
                     if (reactorFailure != null) {
                         standaloneFailure.addSuppressed(reactorFailure);
                     }
+                    String reactorError = reactorFailure == null ? "not attempted" : summarize(reactorFailure);
                     throw new IOException("Unable to resolve Maven compile classpath for module POM "
-                            + module.pomFile() + ". Standalone Maven error: " + standaloneFailure.getMessage(),
+                            + module.pomFile() + ". Root reactor attempt: " + reactorError
+                            + ". Standalone attempt: " + summarize(standaloneFailure),
                             standaloneFailure);
                 }
             }
@@ -78,5 +83,14 @@ class MavenModuleClasspathResolver {
         if (!Files.isRegularFile(output)) {
             throw new IOException("Maven completed without writing the requested classpath file: " + output);
         }
+    }
+
+    private static String summarize(IOException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) return exception.getClass().getSimpleName();
+        List<String> errors = message.lines().map(String::trim)
+                .filter(line -> line.startsWith("[ERROR]")).toList();
+        String summary = errors.isEmpty() ? message : String.join("; ", errors);
+        return summary.length() <= 1200 ? summary : summary.substring(0, 1200) + "...";
     }
 }

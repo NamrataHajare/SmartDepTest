@@ -57,8 +57,6 @@ class MavenArtifactResolver {
         Path jar = destinationDirectory.resolve(artifactId + "-" + version
                 + (effectiveClassifier.isBlank() ? "" : "-" + effectiveClassifier) + ".jar");
         jar.toFile().deleteOnExit();
-        System.out.println("Resolving dependency using target project's Maven configuration...");
-        System.out.println("Dependency: " + groupId + ":" + artifactId + ":" + version);
         try {
                 String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
                     + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
@@ -72,11 +70,8 @@ class MavenArtifactResolver {
             String source = repositorySource(output);
             ResolvedArtifact artifact = new ResolvedArtifact(jar, source);
             resolved.put(cacheKey, artifact);
-            System.out.println("Resolution: SUCCESS");
-            System.out.println("Repository/source: " + source);
             return artifact;
         } catch (IOException exception) {
-            System.out.println("Resolution: FAILED");
             throw new IOException("Could not resolve " + coordinate + " using target project's Maven POM "
                     + projectPom + ". Maven error: " + exception.getMessage(), exception);
         }

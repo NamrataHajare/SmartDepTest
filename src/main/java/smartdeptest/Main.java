@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.EnumMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
@@ -101,58 +102,74 @@ public final class Main {
     private static void printImpactReport(APIChangeResult apiChanges, APIUsageResult usage) {
         System.out.println();
         System.out.println("------------------------------------------------------------");
-        System.out.println("DEPENDENCY API CHANGES");
+        System.out.println("DEPENDENCY API IMPACT");
         System.out.println("------------------------------------------------------------");
         for (DependencyApiResult dependency : apiChanges.dependencies()) {
             System.out.println();
             System.out.println("Dependency: " + dependency.dependencyKey());
             System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
             if (!dependency.pomPath().isBlank()) System.out.println("Target POM: " + dependency.pomPath());
-            if (!dependency.oldArtifactPath().isBlank()) {
-                System.out.println("Old artifact: " + dependency.oldArtifactPath());
-                System.out.println("Old resolution source: " + dependency.oldResolutionSource());
-            }
-            if (!dependency.newArtifactPath().isBlank()) {
-                System.out.println("New artifact: " + dependency.newArtifactPath());
-                System.out.println("New resolution source: " + dependency.newResolutionSource());
-            }
+            APIUsageResult.DependencyImpact impact = findImpact(usage, dependency);
             if (dependency.status() == DependencyApiResult.Status.UNAVAILABLE) {
-                System.out.println("API analysis: ANALYSIS_UNAVAILABLE");
-                System.out.println("Reason: " + dependency.message());
+                System.out.println("Impact: ANALYSIS_UNAVAILABLE");
+                System.out.println("Reason: " + conciseReason(dependency.message()));
                 continue;
             }
-            if (dependency.changes().isEmpty()) {
-                System.out.println("No public/protected API changes detected.");
+            long added = dependency.changes().stream()
+                    .filter(change -> change.kind().name().endsWith("_ADDED")).count();
+            long removed = dependency.changes().stream()
+                    .filter(change -> change.kind().name().endsWith("_REMOVED")).count();
+            long modified = dependency.changes().stream()
+                    .filter(change -> change.kind().name().endsWith("_MODIFIED")).count();
+            System.out.println("API changes: " + dependency.changes().size() + " (added " + added
+                    + ", removed " + removed + ", modified " + modified + ")");
+            if (impact == null) {
+                System.out.println("Impact: ANALYSIS_UNAVAILABLE");
+                System.out.println("Reason: No usage-analysis result was produced.");
+                continue;
             }
-            for (ApiChange change : dependency.changes()) {
-                System.out.println("[" + change.kind() + "] " + change.className()
+            System.out.println("Impact: " + impact.classification());
+            if (impact.classification() == APIUsageResult.Classification.ANALYSIS_UNAVAILABLE) {
+                System.out.println("Reason: " + conciseReason(impact.message()));
+                continue;
+            }
+            List<APIUsageResult.UsageFinding> usedFindings = impact.findings().stream()
+                    .filter(APIUsageResult.UsageFinding::used)
+                    .filter(finding -> finding.change().potentiallyIncompatible()).toList();
+            if (!usedFindings.isEmpty()) {
+                System.out.println("Used incompatible APIs:");
+            }
+            for (APIUsageResult.UsageFinding finding : usedFindings) {
+                ApiChange change = finding.change();
+                System.out.println("- " + change.className()
                         + (change.memberName().isBlank() ? "" : "." + change.memberName()));
-                if (!change.oldSignature().isBlank()) System.out.println("  Old: " + change.oldSignature());
-                if (!change.newSignature().isBlank()) System.out.println("  New: " + change.newSignature());
-            }
-        }
-
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("APPLICATION API USAGE AND POTENTIAL IMPACT");
-        System.out.println("------------------------------------------------------------");
-        for (APIUsageResult.DependencyImpact dependency : usage.dependencies()) {
-            System.out.println();
-            System.out.println("Dependency: " + dependency.dependencyKey());
-            System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
-            System.out.println("Impact: " + dependency.classification());
-            if (!dependency.message().isBlank()) System.out.println("Analysis note: " + dependency.message());
-            for (APIUsageResult.UsageFinding finding : dependency.findings()) {
-                System.out.println("API: " + finding.change().className()
-                        + (finding.change().memberName().isBlank() ? "" : "." + finding.change().memberName()));
-                System.out.println("Usage: " + (finding.used() ? "USED" : "NOT_FOUND"));
                 for (APIUsageResult.UsageLocation location : finding.locations()) {
-                    System.out.println("  " + location.className() + "." + location.methodName());
-                    System.out.println("  Source: " + location.sourcePath() + ":" + location.line());
+                    System.out.println("  Used by: " + location.className() + "." + location.methodName()
+                            + " at " + location.sourcePath() + ":" + location.line());
                 }
             }
         }
         System.out.println();
         System.out.println("Impact describes static-analysis evidence only; it does not claim a runtime failure.");
+    }
+
+    private static APIUsageResult.DependencyImpact findImpact(APIUsageResult usage,
+                                                               DependencyApiResult dependency) {
+        return usage.dependencies().stream()
+                .filter(impact -> impact.dependencyKey().equals(dependency.dependencyKey()))
+                .filter(impact -> impact.oldVersion().equals(dependency.oldVersion()))
+                .filter(impact -> impact.newVersion().equals(dependency.newVersion()))
+                .findFirst().orElse(null);
+    }
+
+    private static String conciseReason(String message) {
+        if (message == null || message.isBlank()) return "Analysis could not be completed.";
+        List<String> errors = message.lines().map(String::trim)
+                .filter(line -> line.startsWith("[ERROR]"))
+                .filter(line -> !line.contains("[Help "))
+                .limit(3).toList();
+        if (!errors.isEmpty()) return String.join(" ", errors);
+        return message.lines().map(String::trim).filter(line -> !line.isBlank()).limit(2)
+                .collect(java.util.stream.Collectors.joining(" "));
     }
 }
