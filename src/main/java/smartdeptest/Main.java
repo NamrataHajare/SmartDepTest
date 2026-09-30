@@ -107,6 +107,15 @@ public final class Main {
             System.out.println();
             System.out.println("Dependency: " + dependency.dependencyKey());
             System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
+            if (!dependency.pomPath().isBlank()) System.out.println("Target POM: " + dependency.pomPath());
+            if (!dependency.oldArtifactPath().isBlank()) {
+                System.out.println("Old artifact: " + dependency.oldArtifactPath());
+                System.out.println("Old resolution source: " + dependency.oldResolutionSource());
+            }
+            if (!dependency.newArtifactPath().isBlank()) {
+                System.out.println("New artifact: " + dependency.newArtifactPath());
+                System.out.println("New resolution source: " + dependency.newResolutionSource());
+            }
             if (dependency.status() == DependencyApiResult.Status.UNAVAILABLE) {
                 System.out.println("API analysis: ANALYSIS_UNAVAILABLE");
                 System.out.println("Reason: " + dependency.message());

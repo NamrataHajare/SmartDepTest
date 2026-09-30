@@ -134,7 +134,7 @@ Stores the full result: project path, selected commit and parent, commit message
 **`src/main/java/smartdeptest/analysis/APIChangeAnalyzer.java`**
 
 - `analyze()` groups Component 1 changes by artifact/version and compares old/new JAR APIs.
-- `MavenArtifactResolver` checks the local Maven repository first and invokes Maven artifact resolution only for missing JARs.
+- `MavenArtifactResolver` invokes Maven from the target project directory with the POM path containing the changed dependency. Maven applies target-POM repositories, parent inheritance, user settings, mirrors, and its configured local repository; resolved JARs are copied into temporary analysis storage.
 - `ApiSurfaceReader` uses the JDK compiler model to enumerate accessible public/protected classes, methods, constructors, and fields. It compares declarations, not implementation bytecode.
 - Results are `ANALYZED` or `UNAVAILABLE`; failure to resolve an artifact is not reported as “no API changes.”
 

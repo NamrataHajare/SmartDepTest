@@ -3,104 +3,148 @@ package smartdeptest.analysis;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 class MavenArtifactResolver {
-    private final Path localRepository;
-    private final Map<String, Path> resolved = new HashMap<>();
+    @FunctionalInterface
+    interface MavenInvoker {
+        String run(Path workingDirectory, List<String> arguments) throws IOException;
+    }
+
+    record ResolvedArtifact(Path jar, String source) {}
+
+    private static final Pattern TRANSFER_SOURCE = Pattern.compile(
+            "(?m)^.*(?:Downloaded|Downloading) from ([^\\s:]+): (\\S+).*$");
+    private final MavenInvoker mavenInvoker;
+    private final Map<String, ResolvedArtifact> resolved = new HashMap<>();
     private final Map<String, List<Path>> apiClasspaths = new HashMap<>();
 
     MavenArtifactResolver() {
-        this(Path.of(System.getProperty("user.home"), ".m2", "repository"));
+        this(MavenCommandRunner::run);
     }
 
-    MavenArtifactResolver(Path localRepository) {
-        this.localRepository = localRepository.toAbsolutePath().normalize();
+    MavenArtifactResolver(MavenInvoker mavenInvoker) {
+        this.mavenInvoker = mavenInvoker;
     }
 
-    Path resolveJar(String groupId, String artifactId, String version) throws IOException {
-        return resolveJar(groupId, artifactId, version, "");
-        }
-
-        Path resolveJar(String groupId, String artifactId, String version, String classifier) throws IOException {
+    ResolvedArtifact resolveJar(Path projectDirectory, String pomPath, String groupId,
+                                String artifactId, String version, String classifier) throws IOException {
         String effectiveClassifier = classifier == null ? "" : classifier;
         String coordinate = groupId + ":" + artifactId + ":" + version + ":jar"
-            + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
-        Path cached = resolved.get(coordinate);
-        if (cached != null && Files.isRegularFile(cached)) return cached;
+                + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
+        Path projectRoot = projectDirectory.toAbsolutePath().normalize();
+        Path projectPom = projectRoot.resolve(pomPath).normalize();
+        if (!projectPom.startsWith(projectRoot) || !Files.isRegularFile(projectPom)) {
+            throw new IOException("Target Maven POM does not exist: " + projectPom);
+        }
+
+        String cacheKey = projectPom + "|" + coordinate;
+        ResolvedArtifact cached = resolved.get(cacheKey);
+        if (cached != null && Files.isRegularFile(cached.jar())) return cached;
         if (!validCoordinatePart(groupId) || !validCoordinatePart(artifactId) || !validCoordinatePart(version)
-            || (!effectiveClassifier.isBlank() && !validCoordinatePart(effectiveClassifier))) {
+                || (!effectiveClassifier.isBlank() && !validCoordinatePart(effectiveClassifier))) {
             throw new IOException("Dependency coordinates are incomplete or contain an unresolved Maven property: "
                     + coordinate);
         }
 
-        Path jar = expectedJarPath(groupId, artifactId, version, effectiveClassifier);
-        if (!Files.isRegularFile(jar)) {
-            MavenCommandRunner.run(Path.of(System.getProperty("user.dir")), List.of(
-                    "mvn", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:get",
-                "-Dartifact=" + coordinate, "-Dtransitive=false"));
+        Path destinationDirectory = Files.createTempDirectory("smartdeptest-resolved-artifact-");
+        destinationDirectory.toFile().deleteOnExit();
+        Path jar = destinationDirectory.resolve(artifactId + "-" + version
+                + (effectiveClassifier.isBlank() ? "" : "-" + effectiveClassifier) + ".jar");
+        jar.toFile().deleteOnExit();
+        System.out.println("Resolving dependency using target project's Maven configuration...");
+        System.out.println("Dependency: " + groupId + ":" + artifactId + ":" + version);
+        try {
+                String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
+                    + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
+                String output = mavenInvoker.run(projectRoot, List.of("mvn", "-f", projectPom.toString(),
+                    "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
+                    "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
+            if (!Files.isRegularFile(jar)) {
+                throw new IOException("Maven completed without producing the requested JAR at " + jar
+                        + ". Maven output: " + output);
+            }
+            String source = repositorySource(output);
+            ResolvedArtifact artifact = new ResolvedArtifact(jar, source);
+            resolved.put(cacheKey, artifact);
+            System.out.println("Resolution: SUCCESS");
+            System.out.println("Repository/source: " + source);
+            return artifact;
+        } catch (IOException exception) {
+            System.out.println("Resolution: FAILED");
+            throw new IOException("Could not resolve " + coordinate + " using target project's Maven POM "
+                    + projectPom + ". Maven error: " + exception.getMessage(), exception);
         }
-        if (!Files.isRegularFile(jar)) {
-            throw new IOException("Maven did not place the artifact in the default local repository: " + jar);
-        }
-        resolved.put(coordinate, jar);
-        return jar;
     }
 
-    List<Path> resolveApiClasspath(String groupId, String artifactId, String version,
-                                   String classifier, Path dependencyJar) throws IOException {
-        String cacheKey = groupId + ":" + artifactId + ":" + version + ":" + classifier;
+    List<Path> resolveApiClasspath(Path projectDirectory, String pomPath, String groupId,
+                                   String artifactId, String version, String classifier,
+                                   ResolvedArtifact dependencyArtifact) throws IOException {
+        Path projectRoot = projectDirectory.toAbsolutePath().normalize();
+        Path projectPom = projectRoot.resolve(pomPath).normalize();
+        String cacheKey = projectPom + "|" + groupId + ":" + artifactId + ":" + version + ":" + classifier;
         List<Path> cached = apiClasspaths.get(cacheKey);
         if (cached != null) return cached;
 
-        Path temporaryDirectory = Files.createTempDirectory("smartdeptest-api-classpath-");
-        Path pom = temporaryDirectory.resolve("pom.xml");
-        Path output = temporaryDirectory.resolve("classpath.txt");
+        Path output = Files.createTempFile("smartdeptest-api-classpath-", ".txt");
         try {
-            String classifierElement = classifier == null || classifier.isBlank() ? ""
-                    : "<classifier>" + classifier + "</classifier>";
-            String temporaryPom = "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">"
-                    + "<modelVersion>4.0.0</modelVersion><groupId>smartdeptest</groupId>"
-                    + "<artifactId>api-analysis</artifactId><version>1</version><dependencies><dependency>"
-                    + "<groupId>" + groupId + "</groupId><artifactId>" + artifactId + "</artifactId>"
-                    + "<version>" + version + "</version><type>jar</type>" + classifierElement
-                    + "</dependency></dependencies></project>";
-            Files.writeString(pom, temporaryPom);
-            MavenCommandRunner.run(temporaryDirectory, List.of("mvn", "-q", "-f", pom.toString(),
-                    "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath",
-                    "-DincludeScope=compile", "-Dmdep.outputFile=" + output));
+            List<String> entries = new ArrayList<>();
+            entries.add("mvn");
+            entries.add("-f");
+            entries.add(projectPom.toString());
+            entries.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
+            entries.add("-DincludeScope=compile");
+            entries.add("-Dmdep.outputFile=" + output);
+            mavenInvoker.run(projectRoot, entries);
 
-            List<Path> entries = new java.util.ArrayList<>();
-            entries.add(dependencyJar.toAbsolutePath().normalize());
+            List<Path> classpath = new ArrayList<>();
+            classpath.add(dependencyArtifact.jar().toAbsolutePath().normalize());
             if (Files.isRegularFile(output)) {
-                String classpath = Files.readString(output).trim();
-                if (!classpath.isBlank()) {
-                    for (String entry : classpath.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+                String value = Files.readString(output).trim();
+                if (!value.isBlank()) {
+                    for (String entry : value.split(Pattern.quote(java.io.File.pathSeparator))) {
                         Path path = Path.of(entry);
-                        if (Files.exists(path)) entries.add(path.toAbsolutePath().normalize());
+                        if (Files.exists(path)) classpath.add(path.toAbsolutePath().normalize());
                     }
                 }
             }
-            List<Path> result = entries.stream().distinct().toList();
+            List<Path> result = classpath.stream().distinct().toList();
             apiClasspaths.put(cacheKey, result);
             return result;
+        } catch (IOException exception) {
+            throw new IOException("Could not resolve the API classpath for " + groupId + ":" + artifactId + ":"
+                    + version + " using target project's Maven POM " + projectPom + ". Maven error: "
+                    + exception.getMessage(), exception);
         } finally {
             Files.deleteIfExists(output);
-            Files.deleteIfExists(pom);
-            Files.deleteIfExists(temporaryDirectory);
         }
     }
 
-    Path expectedJarPath(String groupId, String artifactId, String version, String classifier) {
-        String classifierSuffix = classifier.isBlank() ? "" : "-" + classifier;
-        return localRepository.resolve(groupId.replace('.', '/')).resolve(artifactId).resolve(version)
-                .resolve(artifactId + "-" + version + classifierSuffix + ".jar");
+    private static String repositorySource(String mavenOutput) {
+        Matcher matcher = TRANSFER_SOURCE.matcher(mavenOutput);
+        String lastSource = null;
+        while (matcher.find()) {
+            lastSource = matcher.group(1) + " (" + matcher.group(2) + ")";
+        }
+        return lastSource == null
+                ? "Maven local cache or target project's configured repositories/settings (Maven-selected)"
+                : lastSource;
     }
 
     private static boolean validCoordinatePart(String value) {
         return value != null && value.matches("[A-Za-z0-9_.+-]+")
                 && !value.contains("${") && !value.isBlank();
+    }
+
+    static Path artifactPathSuffix(String groupId, String artifactId, String version, String classifier) {
+        String fileName = artifactId + "-" + version
+                + (classifier == null || classifier.isBlank() ? "" : "-" + classifier) + ".jar";
+        Path groupPath = Path.of(groupId.replace('.', java.io.File.separatorChar));
+        return groupPath.resolve(artifactId).resolve(version).resolve(fileName);
     }
 }

@@ -216,11 +216,22 @@ class AnalysisPipelineTest {
                 newDependency, "pom.xml", "candidate", "parent");
         DependencyChangeResult dependencyChanges = new DependencyChangeResult(project.toString(),
                 "candidate", "parent", "test update", List.of("pom.xml"), List.of(change));
-                MavenArtifactResolver offlineResolver = new MavenArtifactResolver(localRepository) {
+                MavenArtifactResolver offlineResolver = new MavenArtifactResolver() {
                         @Override
-                        List<Path> resolveApiClasspath(String groupId, String artifactId, String version,
-                                                                                   String classifier, Path dependencyJar) {
-                                return List.of(dependencyJar);
+                        ResolvedArtifact resolveJar(Path projectDirectory, String pomPath, String groupId,
+                                                                                String artifactId, String version, String classifier) throws IOException {
+                                Path jar = localRepository.resolve(groupId.replace('.', '/')).resolve(artifactId).resolve(version)
+                                                .resolve(artifactId + "-" + version
+                                                                + (classifier == null || classifier.isBlank() ? "" : "-" + classifier) + ".jar");
+                                if (!Files.isRegularFile(jar)) throw new IOException("Test fixture artifact missing: " + jar);
+                                return new ResolvedArtifact(jar, "synthetic local test repository");
+                        }
+
+                        @Override
+                        List<Path> resolveApiClasspath(Path projectDirectory, String pomPath, String groupId,
+                                                                                   String artifactId, String version, String classifier,
+                                                                                   ResolvedArtifact dependencyArtifact) {
+                                return List.of(dependencyArtifact.jar());
                         }
                 };
                 return new APIChangeAnalyzer(offlineResolver).analyze(dependencyChanges);
@@ -242,8 +253,7 @@ class AnalysisPipelineTest {
                                                 ? List.of(updatedJar) : List.of();
             }
         };
-        return new APIUsageAnalyzer(noMavenResolution, new MavenArtifactResolver(localRepository))
-                .analyze(apiChanges, project);
+        return new APIUsageAnalyzer(noMavenResolution).analyze(apiChanges, project);
     }
 
     private Dependency dependency(String version) {

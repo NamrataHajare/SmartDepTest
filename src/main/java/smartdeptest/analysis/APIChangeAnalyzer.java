@@ -25,60 +25,67 @@ public final class APIChangeAnalyzer {
     }
 
     public APIChangeResult analyze(DependencyChangeResult dependencyChanges) {
+        Path projectDirectory = Path.of(dependencyChanges.getProjectPath()).toAbsolutePath().normalize();
         Map<String, DependencyChange> uniqueChanges = new LinkedHashMap<>();
         for (DependencyChange change : dependencyChanges.getChanges()) {
             String key = change.getGroupId() + ":" + change.getArtifactId() + ":"
                     + change.getOldVersion() + ":" + change.getNewVersion() + ":"
-                    + change.getOldClassifier() + ":" + change.getNewClassifier();
+                    + change.getOldClassifier() + ":" + change.getNewClassifier() + ":" + change.getPomPath();
             uniqueChanges.putIfAbsent(key, change);
         }
 
         List<DependencyApiResult> results = new ArrayList<>();
         for (DependencyChange change : uniqueChanges.values()) {
-            results.add(analyzeDependency(change));
+            results.add(analyzeDependency(change, projectDirectory));
         }
         return new APIChangeResult(dependencyChanges.getProjectPath(), results);
     }
 
-    private DependencyApiResult analyzeDependency(DependencyChange change) {
+    private DependencyApiResult analyzeDependency(DependencyChange change, Path projectDirectory) {
         String groupId = change.getGroupId();
         String artifactId = change.getArtifactId();
         String oldVersion = change.getOldVersion();
         String newVersion = change.getNewVersion();
         if ((!change.getOldType().isBlank() && !"jar".equals(change.getOldType()))
             || (!change.getNewType().isBlank() && !"jar".equals(change.getNewType()))) {
-                return unavailable(change,
+                return unavailable(change, null, null,
                 "API analysis currently supports JAR dependencies, not Maven type "
                     + change.getNewType() + ".");
         }
         if (oldVersion.isBlank() || newVersion.isBlank() || oldVersion.equals("NOT_SPECIFIED")
                 || newVersion.equals("NOT_SPECIFIED")) {
-                return unavailable(change,
+                return unavailable(change, null, null,
                     "Both old and new dependency versions are required for API comparison.");
         }
         if (oldVersion.equals(newVersion)) {
-            return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
-                    change.getOldClassifier(), change.getNewClassifier(),
+                return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
+                    change.getOldClassifier(), change.getNewClassifier(), change.getPomPath(), "", "", "", "",
                 DependencyApiResult.Status.ANALYZED,
                 "Dependency version did not change; JAR comparison was skipped.", List.of());
         }
 
+            MavenArtifactResolver.ResolvedArtifact oldArtifact = null;
+            MavenArtifactResolver.ResolvedArtifact newArtifact = null;
         try {
-            Path oldJar = artifactResolver.resolveJar(groupId, artifactId, oldVersion, change.getOldClassifier());
-            Path newJar = artifactResolver.resolveJar(groupId, artifactId, newVersion, change.getNewClassifier());
-                List<Path> oldClasspath = artifactResolver.resolveApiClasspath(groupId, artifactId,
-                    oldVersion, change.getOldClassifier(), oldJar);
-                List<Path> newClasspath = artifactResolver.resolveApiClasspath(groupId, artifactId,
-                    newVersion, change.getNewClassifier(), newJar);
-                Map<String, ApiSurfaceReader.Member> oldApi = readSurface(oldJar, oldClasspath);
-                Map<String, ApiSurfaceReader.Member> newApi = readSurface(newJar, newClasspath);
+                oldArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
+                    artifactId, oldVersion, change.getOldClassifier());
+                newArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
+                    artifactId, newVersion, change.getNewClassifier());
+                List<Path> oldClasspath = artifactResolver.resolveApiClasspath(projectDirectory, change.getPomPath(),
+                    groupId, artifactId, oldVersion, change.getOldClassifier(), oldArtifact);
+                List<Path> newClasspath = artifactResolver.resolveApiClasspath(projectDirectory, change.getPomPath(),
+                    groupId, artifactId, newVersion, change.getNewClassifier(), newArtifact);
+                Map<String, ApiSurfaceReader.Member> oldApi = readSurface(oldArtifact.jar(), oldClasspath);
+                Map<String, ApiSurfaceReader.Member> newApi = readSurface(newArtifact.jar(), newClasspath);
             List<ApiChange> changes = compare(oldApi, newApi);
             return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
-                    change.getOldClassifier(), change.getNewClassifier(),
+                    change.getOldClassifier(), change.getNewClassifier(), change.getPomPath(),
+                    oldArtifact.jar().toString(), newArtifact.jar().toString(),
+                    oldArtifact.source(), newArtifact.source(),
                     DependencyApiResult.Status.ANALYZED, "", changes);
         } catch (IOException | RuntimeException exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-            return unavailable(change, message);
+                return unavailable(change, oldArtifact, newArtifact, message);
         }
     }
 
@@ -175,9 +182,17 @@ public final class APIChangeAnalyzer {
         return base;
     }
 
-    private static DependencyApiResult unavailable(DependencyChange change, String message) {
+    private static DependencyApiResult unavailable(DependencyChange change,
+                                                   MavenArtifactResolver.ResolvedArtifact oldArtifact,
+                                                   MavenArtifactResolver.ResolvedArtifact newArtifact,
+                                                   String message) {
         return new DependencyApiResult(change.getGroupId(), change.getArtifactId(),
                 change.getOldVersion(), change.getNewVersion(), change.getOldClassifier(), change.getNewClassifier(),
+                change.getPomPath(),
+                oldArtifact == null ? "" : oldArtifact.jar().toString(),
+                newArtifact == null ? "" : newArtifact.jar().toString(),
+                oldArtifact == null ? "" : oldArtifact.source(),
+                newArtifact == null ? "" : newArtifact.source(),
                 DependencyApiResult.Status.UNAVAILABLE, message, List.of());
     }
 }

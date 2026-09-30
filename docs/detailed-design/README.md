@@ -114,13 +114,9 @@ One dependency can produce multiple change entries if multiple fields changed. I
 
 `APIChangeAnalyzer.analyze(DependencyChangeResult)` consumes the Component 1 result directly. It groups repeated change records for the same dependency/version pair so one dependency is analyzed once.
 
-`MavenArtifactResolver.resolveJar()` checks the standard local repository first:
+`MavenArtifactResolver.resolveJar()` invokes Maven from the target project root and passes the POM path that declared the changed dependency with `-f`. It uses Maven's `dependency:copy` goal to resolve the exact old or new JAR and copy it to a temporary analysis directory. It does not assume a local-repository path or repository URL.
 
-```text
-~/.m2/repository/<group path>/<artifact>/<version>/<artifact>-<version>[-classifier].jar
-```
-
-If a required JAR is missing, it invokes Maven's `dependency:get` goal for that exact artifact with transitive resolution disabled. No application POM is edited. If coordinates are unresolved, the JAR is missing after resolution, or the artifact is not a JAR dependency, the API result is `UNAVAILABLE`; it is not treated as an empty API or “no impact.”
+Because resolution runs against the target project's POM, Maven uses repositories declared in that POM, repositories inherited from resolvable parents, the user's `settings.xml`, configured mirrors, and Maven's configured local repository/cache. Maven itself decides which configured source supplies the artifact. The target project's POM and source files are not changed. If coordinates are unresolved, Maven cannot resolve an artifact, or the artifact is not a JAR dependency, the API result is `UNAVAILABLE`; it is not treated as an empty API or “no impact.” The full Maven error is retained in the analysis reason.
 
 When the old and new versions are identical, JAR comparison is skipped. Additions/removals without both versions are marked unavailable because Component 1 has no old/new pair to compare.
 

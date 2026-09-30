@@ -46,15 +46,13 @@ import java.util.stream.Collectors;
 public final class APIUsageAnalyzer {
     private final ApplicationModuleScanner moduleScanner = new ApplicationModuleScanner();
     private final MavenModuleClasspathResolver classpathResolver;
-    private final MavenArtifactResolver artifactResolver;
 
     public APIUsageAnalyzer() {
-        this(new MavenModuleClasspathResolver(), new MavenArtifactResolver());
+        this(new MavenModuleClasspathResolver());
     }
 
-    APIUsageAnalyzer(MavenModuleClasspathResolver classpathResolver, MavenArtifactResolver artifactResolver) {
+    APIUsageAnalyzer(MavenModuleClasspathResolver classpathResolver) {
         this.classpathResolver = classpathResolver;
-        this.artifactResolver = artifactResolver;
     }
 
     public APIUsageResult analyze(APIChangeResult apiChanges, Path projectDirectory) {
@@ -90,8 +88,11 @@ public final class APIUsageAnalyzer {
                                    Path projectDirectory) throws IOException {
         Map<DependencyApiResult, Path> oldJars = new LinkedHashMap<>();
         for (DependencyApiResult dependency : analyzable) {
-            oldJars.put(dependency, artifactResolver.resolveJar(dependency.groupId(), dependency.artifactId(),
-                dependency.oldVersion(), dependency.oldClassifier()));
+            if (dependency.oldArtifactPath().isBlank() || dependency.newArtifactPath().isBlank()) {
+                throw new IOException("Resolved dependency JAR paths are unavailable for "
+                        + dependency.dependencyKey() + ".");
+            }
+            oldJars.put(dependency, Path.of(dependency.oldArtifactPath()));
         }
         Map<String, List<UsageLocation>> index = new HashMap<>();
         List<String> incompleteModules = new ArrayList<>();
@@ -103,13 +104,13 @@ public final class APIUsageAnalyzer {
             Map<String, List<String>> usageOwners = new HashMap<>();
             for (Map.Entry<DependencyApiResult, Path> entry : oldJars.entrySet()) {
             DependencyApiResult dependency = entry.getKey();
-            Path currentJar = artifactResolver.expectedJarPath(dependency.groupId(), dependency.artifactId(),
-                dependency.newVersion(), dependency.newClassifier()).toAbsolutePath().normalize();
+            Path currentJarSuffix = MavenArtifactResolver.artifactPathSuffix(dependency.groupId(),
+                    dependency.artifactId(), dependency.newVersion(), dependency.newClassifier());
             Path oldJar = entry.getValue().toAbsolutePath().normalize();
             boolean includesUpdatedArtifact = classpath.stream().map(path -> path.toAbsolutePath().normalize())
-                .anyMatch(path -> path.equals(currentJar) || path.equals(oldJar));
+                .anyMatch(path -> path.endsWith(currentJarSuffix) || path.equals(oldJar));
             if (!includesUpdatedArtifact) continue;
-            classpath.removeIf(path -> path.toAbsolutePath().normalize().equals(currentJar));
+            classpath.removeIf(path -> path.toAbsolutePath().normalize().endsWith(currentJarSuffix));
             if (!classpath.stream().map(path -> path.toAbsolutePath().normalize()).anyMatch(path -> path.equals(oldJar))) {
                 classpath.add(oldJar);
             }

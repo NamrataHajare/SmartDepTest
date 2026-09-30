@@ -5,6 +5,8 @@ import java.util.List;
 public record DependencyApiResult(String groupId, String artifactId,
                                   String oldVersion, String newVersion,
                                   String oldClassifier, String newClassifier,
+                                  String pomPath, String oldArtifactPath, String newArtifactPath,
+                                  String oldResolutionSource, String newResolutionSource,
                                   Status status, String message,
                                   List<ApiChange> changes) {
     public enum Status { ANALYZED, UNAVAILABLE }
@@ -14,6 +16,11 @@ public record DependencyApiResult(String groupId, String artifactId,
         message = message == null ? "" : message;
         oldClassifier = oldClassifier == null ? "" : oldClassifier;
         newClassifier = newClassifier == null ? "" : newClassifier;
+        pomPath = pomPath == null ? "" : pomPath;
+        oldArtifactPath = oldArtifactPath == null ? "" : oldArtifactPath;
+        newArtifactPath = newArtifactPath == null ? "" : newArtifactPath;
+        oldResolutionSource = oldResolutionSource == null ? "" : oldResolutionSource;
+        newResolutionSource = newResolutionSource == null ? "" : newResolutionSource;
     }
 
     public String dependencyKey() {

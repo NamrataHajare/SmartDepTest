@@ -45,7 +45,7 @@ java -cp target/classes smartdeptest.Main
 
 When prompted, enter the path to the Maven Git project you want to inspect. The existing Component 1 report appears first; API and application-impact analysis follows it.
 
-The analyzer checks `~/.m2/repository` first. If an old or new dependency JAR is missing, it asks Maven to retrieve only that artifact. For semantic application analysis, it asks Maven for each module's compile classpath. The analyzed project's `pom.xml` and working-tree source files are not modified, and the application is not executed.
+For both dependency versions, the analyzer invokes Maven from the target project's directory and passes the POM that declared the change. Maven applies that project's repositories, parent configuration, user settings, mirrors, and local cache. Maven copies resolved JARs to a temporary analysis directory; SmartDepTest does not guess the local-repository path or alter the target POM. For semantic application analysis, it asks Maven for each module's compile classpath. The application is not executed.
 
 For a large repository, increase the Git command timeout from its 120-second default:
 
