@@ -9,9 +9,15 @@ import smartdeptest.analysis.DependencyApiResult;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeDetector;
 import smartdeptest.dependency.DependencyChangeResult;
+import org.objectweb.asm.Type;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -21,22 +27,78 @@ import java.util.Set;
 
 public final class Main {
     public static void main(String[] args) {
+        try {
+            Path classesDirectory = Path.of(Main.class.getProtectionDomain().getCodeSource()
+                    .getLocation().toURI()).toAbsolutePath().normalize();
+            Path dependencyDirectory = classesDirectory.getParent().resolve("dependency");
+            if (!Files.isDirectory(dependencyDirectory)) {
+                throw new IllegalStateException("Runtime dependencies are not staged. Run `mvn compile` first.");
+            }
+
+            List<URL> classpath = new ArrayList<>();
+            classpath.add(classesDirectory.toUri().toURL());
+            try (var dependencies = Files.list(dependencyDirectory)) {
+                for (Path dependency : dependencies.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".jar")).sorted().toList()) {
+                    classpath.add(dependency.toUri().toURL());
+                }
+            }
+
+            try (URLClassLoader loader = new URLClassLoader(classpath.toArray(URL[]::new),
+                    ClassLoader.getPlatformClassLoader())) {
+                Thread thread = Thread.currentThread();
+                ClassLoader previousLoader = thread.getContextClassLoader();
+                thread.setContextClassLoader(loader);
+                try {
+                    Class<?> runner = Class.forName("smartdeptest.SmartDepTestRunner", true, loader);
+                    var method = runner.getDeclaredMethod("main", String[].class);
+                    method.setAccessible(true);
+                    method.invoke(null, (Object) args);
+                } finally {
+                    thread.setContextClassLoader(previousLoader);
+                }
+            }
+        } catch (InvocationTargetException exception) {
+            Throwable cause = exception.getCause();
+            (cause == null ? exception : cause).printStackTrace();
+        } catch (Exception | LinkageError exception) {
+            System.out.println("ERROR: Unable to load SmartDepTest runtime dependencies. "
+                    + exception.getMessage());
+        }
+    }
+}
+
+final class SmartDepTestRunner {
+    private SmartDepTestRunner() {}
+
+    public static void main(String[] args) {
         System.out.println("============================================================");
         System.out.println("SMARTDEPTEST");
         System.out.println("COMPONENT 1 - DEPENDENCY CHANGE DETECTOR");
         System.out.println("============================================================");
         System.out.println();
-        System.out.print("Enter Maven project path:\n> ");
-        String input = new Scanner(System.in).nextLine().trim();
+        String input;
+        if (args.length > 0) {
+            input = args[0].trim();
+        } else {
+            System.out.print("Enter Maven project path:\n> ");
+            input = new Scanner(System.in).nextLine().trim();
+        }
         if (input.isBlank()) { System.out.println("ERROR: Project directory does not exist."); return; }
         Path project = Path.of(input);
         if (!Files.isDirectory(project)) { System.out.println("ERROR: Project directory does not exist."); return; }
         try {
+            long dependencyStarted = System.nanoTime();
             DependencyChangeResult result = new DependencyChangeDetector().detect(project);
+            long dependencyNanos = System.nanoTime() - dependencyStarted;
             printReport(result);
+            long apiImpactStarted = System.nanoTime();
             APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(result);
             APIUsageResult usage = new APIUsageAnalyzer().analyze(apiChanges, project);
             printImpactReport(apiChanges, usage);
+            System.out.printf("Dependency change detection time: %d ms.%n", dependencyNanos / 1_000_000);
+            System.out.printf("Total API impact analysis time: %d ms.%n",
+                (System.nanoTime() - apiImpactStarted) / 1_000_000);
         } catch (Exception exception) {
             String message = exception.getMessage();
             if (message != null && message.contains("not a git repository")) {
@@ -46,6 +108,9 @@ public final class Main {
             } else {
                 System.out.println("ERROR: " + (message == null ? "Dependency detection failed." : message));
             }
+        } catch (LinkageError error) {
+            System.out.println("ERROR: A runtime dependency could not be loaded. Run `mvn compile` first "
+                + "to stage the required dependencies. Details: " + error.getMessage());
         }
     }
 
@@ -108,6 +173,10 @@ public final class Main {
             System.out.println();
             System.out.println("Dependency: " + dependency.dependencyKey());
             System.out.println("Version: " + dependency.oldVersion() + " -> " + dependency.newVersion());
+            System.out.println("Declaration: " + (dependency.dependencyManagement()
+                    ? "DEPENDENCY_MANAGEMENT" : "DIRECT_POM_DECLARATION"));
+            System.out.println("Scope: " + dependency.oldScope() + " -> " + dependency.newScope());
+            System.out.println("Type: " + dependency.oldType() + " -> " + dependency.newType());
             if (!dependency.pomPath().isBlank()) System.out.println("Target POM: " + dependency.pomPath());
             APIUsageResult.DependencyImpact impact = findImpact(usage, dependency);
             if (dependency.status() == DependencyApiResult.Status.UNAVAILABLE) {
@@ -121,8 +190,12 @@ public final class Main {
                     .filter(change -> change.kind().name().endsWith("_REMOVED")).count();
             long modified = dependency.changes().stream()
                     .filter(change -> change.kind().name().endsWith("_MODIFIED")).count();
-            System.out.println("API changes: " + dependency.changes().size() + " (added " + added
+                System.out.println("Dependency API diff: " + dependency.changes().size() + " changes (added " + added
                     + ", removed " + removed + ", modified " + modified + ")");
+                System.out.println("Note: This count is the library-wide diff, not the number of impacted application methods.");
+            if (!dependency.message().isBlank()) {
+                System.out.println("Analysis note: " + conciseReason(dependency.message()));
+            }
             if (impact == null) {
                 System.out.println("Impact: ANALYSIS_UNAVAILABLE");
                 System.out.println("Reason: No usage-analysis result was produced.");
@@ -134,18 +207,49 @@ public final class Main {
                 continue;
             }
             List<APIUsageResult.UsageFinding> usedFindings = impact.findings().stream()
-                    .filter(APIUsageResult.UsageFinding::used)
-                    .filter(finding -> finding.change().potentiallyIncompatible()).toList();
-            if (!usedFindings.isEmpty()) {
-                System.out.println("Used incompatible APIs:");
+                    .filter(APIUsageResult.UsageFinding::used).toList();
+            Set<String> memberUsages = new LinkedHashSet<>();
+            for (APIUsageResult.UsageFinding finding : usedFindings) {
+                if (finding.change().memberName().isBlank()) continue;
+                for (APIUsageResult.UsageLocation location : finding.locations()) {
+                    memberUsages.add(usageKey(finding.change().className(), location));
+                }
             }
+            Set<ImpactRow> impactRows = new LinkedHashSet<>();
             for (APIUsageResult.UsageFinding finding : usedFindings) {
                 ApiChange change = finding.change();
-                System.out.println("- " + change.className()
-                        + (change.memberName().isBlank() ? "" : "." + change.memberName()));
                 for (APIUsageResult.UsageLocation location : finding.locations()) {
-                    System.out.println("  Used by: " + location.className() + "." + location.methodName()
-                            + " at " + location.sourcePath() + ":" + location.line());
+                    if (change.memberName().isBlank() && memberUsages.contains(usageKey(change.className(), location))) {
+                        continue;
+                    }
+                    impactRows.add(new ImpactRow(renderApiChange(change),
+                            simpleClassName(location.className()) + "."
+                                    + location.methodName() + location.methodDescriptor(),
+                            location.instructionType()));
+                }
+            }
+            List<ImpactRow> sortedRows = impactRows.stream()
+                    .sorted(Comparator.comparing(ImpactRow::applicationMethod)
+                            .thenComparing(ImpactRow::changedApi)
+                            .thenComparing(ImpactRow::instructionType))
+                    .toList();
+                    long impactedMethodCount = sortedRows.stream().map(ImpactRow::applicationMethod).distinct().count();
+                    System.out.println("Impacted application methods: " + impactedMethodCount
+                        + " (" + sortedRows.size() + " API references)");
+            if (sortedRows.isEmpty()) {
+                System.out.println("NONE");
+            } else {
+                System.out.println("#   | Changed API member (descriptor)                  | Application method                              | Instruction");
+                System.out.println("----+---------------------------------------------------+--------------------------------------------------+------------------");
+                int displayed = Math.min(sortedRows.size(), 15);
+                for (int index = 0; index < displayed; index++) {
+                    ImpactRow row = sortedRows.get(index);
+                    System.out.printf("%3d | %-49s | %-48s | %s%n", index + 1,
+                            tableCell(row.changedApi(), 49), tableCell(row.applicationMethod(), 48),
+                            row.instructionType());
+                }
+                if (sortedRows.size() > displayed) {
+                    System.out.println("... and " + (sortedRows.size() - displayed) + " more impacted method(s).");
                 }
             }
         }
@@ -153,12 +257,80 @@ public final class Main {
         System.out.println("Impact describes static-analysis evidence only; it does not claim a runtime failure.");
     }
 
+    private static String renderApiChange(ApiChange change) {
+        String owner = simpleClassName(change.className());
+        if (change.memberName().isBlank()) return owner + " [" + change.kind() + "]";
+        if (change.kind().name().startsWith("FIELD_")) {
+            String oldType = change.oldDescriptor().isBlank() ? "" : readableType(Type.getType(change.oldDescriptor()));
+            String newType = change.newDescriptor().isBlank() ? "" : readableType(Type.getType(change.newDescriptor()));
+            String type = oldType.isBlank() ? newType : oldType;
+            if (!oldType.isBlank() && !newType.isBlank() && !oldType.equals(newType)) {
+                type += " -> " + newType;
+            }
+            return owner + "." + change.memberName() + (type.isBlank() ? "" : ": " + type)
+                    + " [" + change.kind() + "]";
+        }
+
+        String name = "<init>".equals(change.memberName()) ? owner : owner + "." + change.memberName();
+        String oldSignature = change.oldDescriptor().isBlank() ? ""
+                : readableMethod(name, change.oldDescriptor());
+        String newSignature = change.newDescriptor().isBlank() ? ""
+                : readableMethod(name, change.newDescriptor());
+        String signature = oldSignature.isBlank() ? newSignature : oldSignature;
+        if (!oldSignature.isBlank() && !newSignature.isBlank() && !oldSignature.equals(newSignature)) {
+            signature += " -> " + newSignature;
+        }
+        if (!oldSignature.isBlank() && !newSignature.isBlank()
+                && change.oldDescriptor().substring(0, change.oldDescriptor().indexOf(')') + 1)
+                .equals(change.newDescriptor().substring(0, change.newDescriptor().indexOf(')') + 1))) {
+            Type oldReturn = Type.getReturnType(change.oldDescriptor());
+            Type newReturn = Type.getReturnType(change.newDescriptor());
+            if (!oldReturn.equals(newReturn)) {
+                signature += " (return " + readableType(oldReturn) + " -> " + readableType(newReturn) + ")";
+            }
+        }
+        return signature + " [" + change.kind() + "]";
+    }
+
+    private static String readableMethod(String name, String descriptor) {
+        return name + "(" + java.util.Arrays.stream(Type.getArgumentTypes(descriptor))
+            .map(SmartDepTestRunner::readableType)
+            .collect(java.util.stream.Collectors.joining(", ")) + ")";
+    }
+
+    private static String readableType(Type type) {
+        if (type.getSort() == Type.ARRAY) {
+            return readableType(type.getElementType()) + "[]".repeat(type.getDimensions());
+        }
+        String name = type.getClassName().replace('$', '.');
+        return name.substring(name.lastIndexOf('.') + 1);
+    }
+
+    private static String simpleClassName(String internalName) {
+        return internalName.substring(internalName.lastIndexOf('/') + 1).replace('$', '.');
+    }
+
+    private static String usageKey(String owner, APIUsageResult.UsageLocation location) {
+        return owner + "|" + location.className() + "|" + location.methodName() + location.methodDescriptor();
+    }
+
+    private static String tableCell(String value, int width) {
+        if (value.length() <= width) return value;
+        return value.substring(0, width - 3) + "...";
+    }
+
+    private record ImpactRow(String changedApi, String applicationMethod, String instructionType) {}
+
     private static APIUsageResult.DependencyImpact findImpact(APIUsageResult usage,
                                                                DependencyApiResult dependency) {
         return usage.dependencies().stream()
                 .filter(impact -> impact.dependencyKey().equals(dependency.dependencyKey()))
                 .filter(impact -> impact.oldVersion().equals(dependency.oldVersion()))
                 .filter(impact -> impact.newVersion().equals(dependency.newVersion()))
+                .filter(impact -> impact.oldClassifier().equals(dependency.oldClassifier()))
+                .filter(impact -> impact.newClassifier().equals(dependency.newClassifier()))
+                .filter(impact -> impact.pomPath().equals(dependency.pomPath()))
+                .filter(impact -> impact.dependencyManagement() == dependency.dependencyManagement())
                 .findFirst().orElse(null);
     }
 

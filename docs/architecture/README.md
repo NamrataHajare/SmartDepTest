@@ -26,13 +26,19 @@ DependencyChangeResult.java: stores the final report data
 Main.java: prints the existing Component 1 report
           |
           v
-APIChangeAnalyzer.java: resolves old/new JARs and compares APIs
+APIChangeAnalyzer.java: resolves old/new JARs
+          |
+          v
+JApiCmpApiComparator.java: compares dependency APIs and normalizes JVM descriptors
           |
           v
 APIChangeResult.java
           |
           v
-APIUsageAnalyzer.java: discovers modules and semantically indexes source usage
+APIUsageAnalyzer.java: delegates to BytecodeAPIUsageAnalyzer
+          |
+          +--> ApplicationModuleScanner.java: locates Maven modules and target/classes
+          +--> ASM visitors: index method, field, and class references once per class
           |
           v
 APIUsageResult.java: evidence and potential-impact classification
@@ -133,25 +139,26 @@ Stores the full result: project path, selected commit and parent, commit message
 
 **`src/main/java/smartdeptest/analysis/APIChangeAnalyzer.java`**
 
-- `analyze()` groups Component 1 changes by artifact/version and compares old/new JAR APIs.
+- `analyze()` groups Component 1 changes by artifact/version/declaration and obtains old/new JARs.
 - `MavenArtifactResolver` invokes Maven from the target project directory with the POM path containing the changed dependency. Maven applies target-POM repositories, parent inheritance, user settings, mirrors, and its configured local repository; resolved JARs are copied into temporary analysis storage.
-- `ApiSurfaceReader` uses the JDK compiler model to enumerate accessible public/protected classes, methods, constructors, and fields. It compares declarations, not implementation bytecode.
+- `JApiCmpApiComparator` compares only the dependency JARs. It emits changed classes, methods, constructors, and fields as normalized `ApiChange` values with owner internal names and old/new JVM descriptors.
 - Results are `ANALYZED` or `UNAVAILABLE`; failure to resolve an artifact is not reported as “no API changes.”
 
 **`src/main/java/smartdeptest/analysis/APIUsageAnalyzer.java`**
 
-- `analyze()` receives `APIChangeResult` plus the application project path.
-- `ApplicationModuleScanner` discovers standard `src/main/java` roots and associates each with its nearest `pom.xml`.
+- `analyze()` receives `APIChangeResult` plus the application project path and delegates bytecode analysis.
+- `ApplicationModuleScanner` discovers Maven modules from source-root or compiled-output presence and associates each with its nearest `pom.xml` and `target/classes` path.
 - `MavenModuleClasspathResolver` obtains each module's compile classpath through Maven. It first selects the module from the target root reactor with `-pl <module> -am`, allowing sibling SNAPSHOT projects to resolve in-reactor; it falls back to the standalone module POM if the root is not a usable reactor. The classpath is written to a temporary file and deleted afterward.
-- One JDK `JavacTask` pass per module resolves method calls, constructors, method references, field accesses, and type references against the old dependency JAR and records source path/line, class, and method. The changed artifact is included only when that module's Maven compile classpath contains its updated version.
-- `APIUsageResult` reports `POTENTIAL_IMPACT`, `NO_IDENTIFIED_IMPACT`, or `ANALYSIS_UNAVAILABLE`. Ordinary added APIs do not by themselves imply impact; a newly added abstract contract is considered only when source implements or extends its type. If semantic errors prevent proving a negative, the result is unavailable instead of no impact.
+- `BytecodeAPIUsageAnalyzer` builds hash-based keys from changed API owners and descriptors, then scans each relevant application class once with ASM. It checks method instructions, field instructions, type references, descriptors, and method handles.
+- A module is scanned only when its compile classpath contains the updated dependency. Missing compiled classes or malformed bytecode produce `ANALYSIS_UNAVAILABLE`, not a no-impact result.
+- `APIUsageResult` reports impact classification and application class/method descriptors plus instruction kinds for matches.
 
 **Analysis result models**
 
-- `analysis/ApiChange.java`: one class/member addition, removal, or modification, with old/new signatures and an incompatibility flag.
+- `analysis/ApiChange.java`: one class/member addition, removal, or modification, with JVM descriptors, old/new signatures, and an incompatibility flag.
 - `analysis/DependencyApiResult.java` and `analysis/APIChangeResult.java`: API differences grouped by dependency and version.
-- `analysis/APIUsageResult.java`: per-dependency classification and per-API source locations.
-- `analysis/ApplicationModule.java`: discovered module/POM/source-root data passed to semantic analysis.
+- `analysis/APIUsageResult.java`: per-dependency classification and per-API bytecode locations.
+- `analysis/ApplicationModule.java`: discovered module/POM/compiled-output data passed to ASM analysis.
 
 ## Where to make a change
 
@@ -162,18 +169,18 @@ Stores the full result: project path, selected commit and parent, commit message
 | What counts as a dependency change | `DependencyComparator` and `DependencyChange.Type` |
 | What the command prints | `Main.printReport()` |
 | What information a result stores | `Dependency`, `DependencyChange`, or `DependencyChangeResult` |
-| How dependency JAR APIs are compared | `analysis/APIChangeAnalyzer` and `analysis/ApiSurfaceReader` |
-| How actual Java usage is resolved | `analysis/APIUsageAnalyzer` and `analysis/MavenModuleClasspathResolver` |
+| How dependency JAR APIs are compared | `analysis/APIChangeAnalyzer` and `analysis/JApiCmpApiComparator` |
+| How actual application usage is found | `analysis/BytecodeAPIUsageAnalyzer` and `analysis/MavenModuleClasspathResolver` |
 
 ## Tests
 
 - `src/test/java/smartdeptest/dependency/Component1Test.java` checks parsing and comparison rules.
 - `src/test/java/smartdeptest/dependency/DependencyChangeDetectorTest.java` creates small temporary Git repositories and checks commit selection.
-- `src/test/java/smartdeptest/analysis/AnalysisPipelineTest.java` creates local synthetic JARs and Java modules to check API changes, semantic usage, and impact classifications without network access.
+- `src/test/java/smartdeptest/analysis/AnalysisPipelineTest.java` creates local synthetic JARs and compiled application modules to check descriptor-sensitive bytecode usage and impact classifications without network access.
 - `src/test/java/smartdeptest/analysis/MavenModuleClasspathResolverTest.java` verifies root-reactor module selection, `-am`, and standalone-POM fallback.
 
 Run both groups with `mvn test`.
 
 ## What this component does not do
 
-Components 2–3 compare JAR declarations and inspect Java source. They do not execute the application, prove runtime behavior, build a whole-program call graph, or select tests. Analysis is limited to standard Maven main-source roots and APIs resolvable by the JDK compiler.
+The API-impact pipeline compares dependency JARs and inspects compiled application bytecode. It does not execute the application, prove runtime behavior, build a whole-program call graph, inspect test bytecode, analyze coverage, or select tests. Component 1 compares declared POM entries and does not resolve transitive dependency updates.

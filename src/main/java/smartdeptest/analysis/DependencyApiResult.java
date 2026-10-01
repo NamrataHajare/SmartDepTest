@@ -5,6 +5,8 @@ import java.util.List;
 public record DependencyApiResult(String groupId, String artifactId,
                                   String oldVersion, String newVersion,
                                   String oldClassifier, String newClassifier,
+                                  String oldScope, String newScope, String oldType, String newType,
+                                  boolean dependencyManagement,
                                   String pomPath, String oldArtifactPath, String newArtifactPath,
                                   String oldResolutionSource, String newResolutionSource,
                                   Status status, String message,
@@ -16,6 +18,10 @@ public record DependencyApiResult(String groupId, String artifactId,
         message = message == null ? "" : message;
         oldClassifier = oldClassifier == null ? "" : oldClassifier;
         newClassifier = newClassifier == null ? "" : newClassifier;
+        oldScope = oldScope == null ? "" : oldScope;
+        newScope = newScope == null ? "" : newScope;
+        oldType = oldType == null ? "" : oldType;
+        newType = newType == null ? "" : newType;
         pomPath = pomPath == null ? "" : pomPath;
         oldArtifactPath = oldArtifactPath == null ? "" : oldArtifactPath;
         newArtifactPath = newArtifactPath == null ? "" : newArtifactPath;

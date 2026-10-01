@@ -42,7 +42,7 @@ class MavenModuleClasspathResolverTest {
             return "classpath resolved";
         });
         ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
-                sourceDirectory, List.of());
+                moduleDirectory.resolve("target/classes"));
 
         List<Path> classpath = resolver.resolve(module);
 
@@ -77,7 +77,7 @@ class MavenModuleClasspathResolverTest {
             return "classpath resolved";
         });
         ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
-                sourceDirectory, List.of());
+                moduleDirectory.resolve("target/classes"));
 
         resolver.resolve(module);
 
@@ -103,7 +103,7 @@ class MavenModuleClasspathResolverTest {
                         throw new IOException("[ERROR] changeskin.core:3.1-SNAPSHOT was not found");
                 });
                 ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
-                                sourceDirectory, List.of());
+                                moduleDirectory.resolve("target/classes"));
 
                 IOException exception = assertThrows(IOException.class, () -> resolver.resolve(module));
 
@@ -133,7 +133,7 @@ class MavenModuleClasspathResolverTest {
                         return "retried with update flag";
                 });
                 ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
-                                sourceDirectory, List.of());
+                                moduleDirectory.resolve("target/classes"));
 
                 resolver.resolve(module);
 

@@ -1,6 +1,6 @@
 # Detailed Design: Dependency-to-Impact Evidence
 
-This guide follows the evidence chain through Components 1–3. Component 1 identifies the committed dependency change; Components 2 and 3 inspect API declarations and source usage. The final label is static-analysis evidence, not a prediction that the application will crash.
+This guide follows the evidence chain from committed dependency detection through JApiCmp comparison and ASM bytecode usage analysis. The final label is static-analysis evidence, not a prediction that the application will crash.
 
 ## The process at a glance
 
@@ -13,8 +13,9 @@ Project folder
 	-> parse and compare dependencies
 	-> report the newest commit with a dependency change
 	-> compare the dependency's old/new JAR APIs
-	-> resolve changed API references in application source
-	-> report potential impact only when incompatible changed APIs are used
+	-> normalize changed API owners and JVM descriptors
+	-> scan relevant target/classes bytecode once with ASM
+	-> report application classes/methods that reference changed APIs
 ```
 
 ## Step 1: Find the project POM files
@@ -112,7 +113,7 @@ One dependency can produce multiple change entries if multiple fields changed. I
 
 ## Step 8: Resolve the changed dependency artifacts
 
-`APIChangeAnalyzer.analyze(DependencyChangeResult)` consumes the Component 1 result directly. It groups repeated change records for the same dependency/version pair so one dependency is analyzed once.
+`APIChangeAnalyzer.analyze(DependencyChangeResult)` consumes the Component 1 result directly. It groups repeated change records by dependency/version and declaration metadata so distinct direct and dependency-management entries are not collapsed.
 
 `MavenArtifactResolver.resolveJar()` invokes Maven from the target project root and passes the POM path that declared the changed dependency with `-f`. It uses Maven's `dependency:copy` goal to resolve the exact old or new JAR and copy it to a temporary analysis directory. It does not assume a local-repository path or repository URL.
 
@@ -120,43 +121,42 @@ Because resolution runs against the target project's POM, Maven uses repositorie
 
 When the old and new versions are identical, JAR comparison is skipped. Additions/removals without both versions are marked unavailable because Component 1 has no old/new pair to compare.
 
-## Step 9: Compare public and protected API declarations
+## Step 9: Compare dependency APIs with JApiCmp
 
-`ApiSurfaceReader` uses the JDK compiler model to inspect class files in each JAR. The key includes class identity and erased method parameter types; the displayed signature retains generic source types. This lets a changed parameter/return/throws/modifier declaration be reported as `MODIFIED`, while a changed parameter list is paired as a method signature change when it is unambiguous.
+`JApiCmpApiComparator` compares only the old and new dependency JARs. It includes public and protected classes, methods, constructors, and fields and maps JApiCmp statuses to normalized `ApiChange` values. Class owners use JVM internal names such as `org/example/Service`. Methods and constructors retain old and new JVM descriptors, including return types; fields retain their old and new descriptors. An unambiguous same-owner/name method remove/add pair is represented as a modified signature while preserving both descriptors. Removed APIs retain their old descriptor for matching application bytecode that still links to them.
 
-It records visible classes, constructors, methods, and fields, including class inheritance/interface declarations and field constant values. Ordinary added declarations are API changes but are not marked incompatible by themselves. A newly added abstract method is treated as a potentially incompatible contract change; source is considered affected only when an application class implements or extends that interface/abstract class. Removals and changed declarations are conservatively marked potentially incompatible. Private/package-private implementation members are excluded.
+Each dependency result is `ANALYZED` with zero or more changes, or `UNAVAILABLE` with a reason. The result retains dependency coordinates, versions, scope/type/classifier, POM origin, and whether the declaration came from `dependencyManagement`.
 
-Each dependency result is `ANALYZED` with zero or more `ApiChange` entries, or `UNAVAILABLE` with a reason. The result retains dependency coordinates and old/new versions for traceability.
+## Step 10: Scan compiled application bytecode
 
-## Step 10: Discover modules and resolve real source usage
+`ApplicationModuleScanner` discovers Maven modules from standard `src/main/java` roots or existing `target/classes` output and associates each with its nearest `pom.xml`. The application must be compiled before analysis; missing bytecode for a relevant module is `ANALYSIS_UNAVAILABLE`, not “no impact.”
 
-`ApplicationModuleScanner` walks the project and discovers standard `src/main/java` folders, including module folders. It skips `.git`, `target`, and `node_modules`, then associates each source root with its nearest `pom.xml`.
+`MavenModuleClasspathResolver` asks Maven's `dependency:build-classpath` goal for each module's compile classpath. For a multi-module project, it first invokes Maven from the project root with `-f <root pom> -pl <module path> -am`; this includes required sibling SNAPSHOT projects in the reactor. If the root POM is not a usable reactor, it retries with the module POM directly. The classpath output goes to a temporary file and is removed.
 
-`MavenModuleClasspathResolver` asks Maven's `dependency:build-classpath` goal for each module's compile classpath. For a multi-module project, it first invokes Maven from the project root with `-f <root pom> -pl <module path> -am`; this includes required sibling projects in the reactor so sibling SNAPSHOT dependencies need not already be installed or remotely published. If the root POM is not a usable reactor, it retries with the module POM directly. Within one analysis run, the resulting base classpath is cached per target POM and reused for both JAR versions and other changed dependencies declared there. The classpath output goes to a temporary file and is removed. Sibling module `target/classes` directories and source roots are also provided to the compiler where available. Maven may resolve the project's compile dependencies if they are not cached, which is needed for semantic type attribution.
+`BytecodeAPIUsageAnalyzer` builds hash-based keys from owner/name/descriptor (or owner/name/field descriptor), then walks each relevant module's class files once. It reads method invocation instructions, field instructions, class/type references, descriptor types, and method handles. When a reference owner inherits a changed method or field, it resolves cached class headers through the superclass/interface chain; a nearer declaration stops the search so an override is not attributed to the changed ancestor. Each match records the application internal class name, method name and descriptor, and instruction kind. A changed dependency is associated with a module only when it appears on that module's Maven compile classpath.
 
-`APIUsageAnalyzer` analyzes each module once with a JDK `JavacTask`, rather than rescanning all source for every changed API. It compiles for attribution only; it does not execute application code. Its tree scanner skips imports as evidence and records resolved calls, constructor calls, method references, field uses, and type references. Locations include project-relative source path, class, method, and line.
-
-For each incompatible API change, the scanner matches the old API symbol. Ordinary added APIs are retained in the API report but are not impact triggers. For a new abstract contract method, it instead checks whether an application class implements or extends the declaring type.
+Changed APIs are reported independently from their usages. An added or modified API with no bytecode match has no identified application impact; a matched changed API is reported as a potential impact. Abstract contract additions also match classes that implement or extend the declaring type.
 
 ## Step 11: Interpret the impact label
 
 | Classification | Meaning |
 | --- | --- |
-| `POTENTIAL_IMPACT` | At least one potentially incompatible changed API was semantically resolved at an application source location. This does not prove a runtime failure. |
-| `NO_IDENTIFIED_IMPACT` | API comparison completed and no incompatible changed API was found in the indexed application source. |
-| `ANALYSIS_UNAVAILABLE` | An artifact, source root, Maven classpath, or required symbol could not be analyzed completely; a negative result would not be trustworthy. |
+| `POTENTIAL_IMPACT` | ASM found at least one application bytecode reference to a changed API. This does not prove a runtime failure. |
+| `NO_IDENTIFIED_IMPACT` | API comparison completed and no changed API reference was found in scanned application bytecode. |
+| `ANALYSIS_UNAVAILABLE` | An artifact, relevant `target/classes`, Maven classpath, or class file could not be analyzed completely; a negative result would not be trustworthy. |
 
-An added method can appear as `METHOD_ADDED` while impact remains `NO_IDENTIFIED_IMPACT`. If application source uses a new-version-only API that cannot resolve against the old JAR, compiler errors make the negative result `ANALYSIS_UNAVAILABLE`. If a removed old API is still resolved as used while other source errors exist, the positive evidence remains `POTENTIAL_IMPACT` and the report includes an analysis note.
+The report lists changed APIs even when none are used. For a modified method, references matching either old or new descriptor are retained; removed methods and fields match their old descriptors. Impact is bytecode evidence only and does not establish a runtime failure.
 
 ## Evidence and limitations
 
 - Component 1's selected parent/candidate versions remain the sole source of dependency-change facts; Components 2–3 do not inspect commit messages or repeat Git detection.
 - JAR analysis uses public/protected declarations, not implementation bytecode. It does not establish behavioral compatibility, runtime linkage, reflection strings, dynamically loaded classes, or service configuration changes.
-- Source analysis covers Java under standard Maven `src/main/java`; test sources, generated sources, Kotlin, and nonstandard source roots are not included. A module is checked for a changed dependency only if that artifact is on the module's Maven compile classpath.
+- Bytecode analysis covers compiled classes under Maven `target/classes`; test output, reflection strings, dynamically loaded classes, and nonstandard output directories are not included. A module is checked for a changed dependency only if that artifact is on the module's Maven compile classpath.
 - Maven is asked for each module's compile classpath. Uncached project compile dependencies or Maven plugins may be downloaded by Maven. The application is not run, and its POM is not changed.
-- Java semantic errors are retained as incomplete-analysis evidence. A module with unresolved symbols prevents a “no impact” conclusion when an incompatible API might be used.
+- The project must be compiled before analysis. Missing or malformed class files prevent a “no impact” conclusion for the affected module.
+- Component 1 compares declared POM entries and dependency-management entries; it does not resolve transitive dependency changes. No direct/transitive status is inferred from bytecode.
 - API analysis supports JAR artifact types. Parent inheritance, profiles, imported BOMs, shaded/relocated classes, and all Maven classifier/type edge cases are not fully modeled.
-- A method parameter signature change is paired as `METHOD_MODIFIED` only if one removed and one added method with that owner/name can be paired unambiguously; otherwise they remain separate removed/added API records.
+- A method signature change is paired as `METHOD_MODIFIED` only if one removed and one added method with that owner/name can be paired unambiguously; otherwise they remain separate removed/added API records.
 - Impact means “potentially impacted,” not “will fail.” Runtime validation and test selection belong to later components.
 
 ## Current limits to remember

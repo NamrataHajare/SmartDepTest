@@ -1,10 +1,9 @@
 package smartdeptest.analysis;
 
-import java.util.List;
-
 public record ApiChange(Kind kind, String className, String memberName,
                         String oldSignature, String newSignature,
-                        List<String> oldParameterTypes, boolean potentiallyIncompatible) {
+                        String oldDescriptor, String newDescriptor,
+                        boolean potentiallyIncompatible) {
     public enum Kind {
         CLASS_ADDED, CLASS_REMOVED, CLASS_MODIFIED,
         METHOD_ADDED, METHOD_REMOVED, METHOD_MODIFIED,
@@ -12,6 +11,7 @@ public record ApiChange(Kind kind, String className, String memberName,
     }
 
     public ApiChange {
-        oldParameterTypes = List.copyOf(oldParameterTypes);
+        oldDescriptor = oldDescriptor == null ? "" : oldDescriptor;
+        newDescriptor = newDescriptor == null ? "" : newDescriptor;
     }
 }

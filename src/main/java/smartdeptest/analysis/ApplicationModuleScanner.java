@@ -15,36 +15,30 @@ import java.util.Map;
 final class ApplicationModuleScanner {
     List<ApplicationModule> discover(Path projectDirectory) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
-        Map<Path, Path> sourceRoots = new LinkedHashMap<>();
+        Map<Path, Path> modulePoms = new LinkedHashMap<>();
         Files.walkFileTree(projectRoot, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                if (!directory.equals(projectRoot) && isIgnored(directory.getFileName().toString())) {
+                if (!directory.equals(projectRoot) && (directory.getFileName().toString().equals(".git")
+                        || directory.getFileName().toString().equals("node_modules"))) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
-                Path parent = directory.getParent();
-                if (parent != null && parent.getFileName().toString().equals("main")
-                        && parent.getParent() != null && parent.getParent().getFileName().toString().equals("src")
-                        && directory.getFileName().toString().equals("java")) {
-                    Path moduleDirectory = parent.getParent().getParent();
-                    Path pom = findPom(moduleDirectory, projectRoot);
-                    if (pom != null) sourceRoots.put(directory, pom);
+                if (Files.isDirectory(directory.resolve("src/main/java"))
+                        || Files.isDirectory(directory.resolve("target/classes"))) {
+                    Path pom = findPom(directory, projectRoot);
+                    if (pom != null) modulePoms.put(pom.getParent(), pom);
+                }
+                if (directory.getFileName().toString().equals("target")) {
+                    return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
             }
         });
 
         List<ApplicationModule> modules = new ArrayList<>();
-        for (Map.Entry<Path, Path> sourceRoot : sourceRoots.entrySet()) {
-            List<Path> javaFiles;
-            try (var files = Files.walk(sourceRoot.getKey())) {
-                javaFiles = files.filter(Files::isRegularFile)
-                        .filter(file -> file.getFileName().toString().endsWith(".java"))
-                        .sorted().toList();
-            }
-            if (javaFiles.isEmpty()) continue;
-                modules.add(new ApplicationModule(projectRoot, sourceRoot.getValue().getParent(), sourceRoot.getValue(),
-                    sourceRoot.getKey(), javaFiles));
+        for (Map.Entry<Path, Path> module : modulePoms.entrySet()) {
+            modules.add(new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
+                    module.getKey().resolve("target/classes")));
         }
         modules.sort(Comparator.comparing(module -> module.moduleDirectory().toString()));
         return List.copyOf(modules);
@@ -57,9 +51,5 @@ final class ApplicationModuleScanner {
             if (Files.isRegularFile(pom)) return pom;
         }
         return null;
-    }
-
-    private static boolean isIgnored(String name) {
-        return name.equals(".git") || name.equals("target") || name.equals("node_modules");
     }
 }
