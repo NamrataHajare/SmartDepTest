@@ -9,6 +9,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 class MavenArtifactResolver {
     @FunctionalInterface
@@ -85,16 +92,21 @@ class MavenArtifactResolver {
                                    ResolvedArtifact dependencyArtifact) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
         Path projectPom = projectRoot.resolve(pomPath).normalize();
-        String cacheKey = projectPom.toString();
+        String effectiveClassifier = classifier == null ? "" : classifier;
+        String coordinate = groupId + ":" + artifactId + ":" + version + ":jar"
+                + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
+        String cacheKey = projectPom + "|" + coordinate;
         List<Path> baseClasspath = apiClasspaths.get(cacheKey);
 
         if (baseClasspath == null) {
+            ClasspathPom classpathPom = null;
             Path output = Files.createTempFile("smartdeptest-api-classpath-", ".txt");
             try {
+                classpathPom = createClasspathPom(projectPom, groupId, artifactId, version, effectiveClassifier);
                 List<String> entries = new ArrayList<>();
                 entries.add("mvn");
                 entries.add("-f");
-                entries.add(projectPom.toString());
+                entries.add(classpathPom.wrapper().toString());
                 entries.add("org.apache.maven.plugins:maven-dependency-plugin:3.7.1:build-classpath");
                 entries.add("-DincludeScope=compile");
                 entries.add("-Dmdep.outputFile=" + output);
@@ -117,6 +129,10 @@ class MavenArtifactResolver {
                         + version + " using target project's Maven POM " + projectPom + ". Maven error: "
                         + exception.getMessage(), exception);
             } finally {
+                if (classpathPom != null) {
+                    Files.deleteIfExists(classpathPom.wrapper());
+                    Files.deleteIfExists(classpathPom.parent());
+                }
                 Files.deleteIfExists(output);
             }
         }
@@ -124,6 +140,129 @@ class MavenArtifactResolver {
         List<Path> classpath = new ArrayList<>(baseClasspath);
         classpath.add(dependencyArtifact.jar().toAbsolutePath().normalize());
         return classpath.stream().distinct().toList();
+    }
+
+    private static ClasspathPom createClasspathPom(Path projectPom, String groupId, String artifactId,
+                                                   String version, String classifier) throws IOException {
+        Path parentPom = null;
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+            Element project = factory.newDocumentBuilder().parse(projectPom.toFile()).getDocumentElement();
+            String parentGroupId = childText(project, "groupId");
+            String parentArtifactId = childText(project, "artifactId");
+            String parentVersion = childText(project, "version");
+            Element parent = child(project, "parent");
+            if (parentGroupId.isBlank() && parent != null) parentGroupId = childText(parent, "groupId");
+            if (parentVersion.isBlank() && parent != null) parentVersion = childText(parent, "version");
+            Map<String, String> properties = new HashMap<>();
+            Element propertyElement = child(project, "properties");
+            if (propertyElement != null) {
+                for (Node property = propertyElement.getFirstChild(); property != null;
+                     property = property.getNextSibling()) {
+                    if (property instanceof Element element) {
+                        properties.put(localName(element), element.getTextContent().trim());
+                    }
+                }
+            }
+            parentGroupId = resolveProperties(parentGroupId, properties);
+            parentArtifactId = resolveProperties(parentArtifactId, properties);
+            parentVersion = resolveProperties(parentVersion, properties);
+            if (parentGroupId.isBlank() || parentArtifactId.isBlank() || parentVersion.isBlank()
+                    || parentGroupId.contains("${") || parentArtifactId.contains("${")
+                    || parentVersion.contains("${")) {
+                throw new IOException("Could not determine the target POM's Maven coordinates.");
+            }
+
+            Element packaging = child(project, "packaging");
+            if (packaging == null) {
+                packaging = project.getOwnerDocument().createElementNS(project.getNamespaceURI(), "packaging");
+                Element versionElement = child(project, "version");
+                Element artifactIdElement = child(project, "artifactId");
+                Node anchor = versionElement == null ? artifactIdElement : versionElement;
+                if (anchor == null) {
+                    throw new IOException("Could not locate Maven coordinates in the target POM.");
+                }
+                project.insertBefore(packaging, anchor.getNextSibling());
+            }
+            packaging.setTextContent("pom");
+            parentPom = Files.createTempFile(projectPom.getParent(), ".smartdeptest-parent-", ".pom");
+            TransformerFactory transformerFactory = TransformerFactory.newInstance();
+            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            transformerFactory.newTransformer().transform(new DOMSource(project.getOwnerDocument()),
+                    new StreamResult(parentPom.toFile()));
+
+            String wrapper = "<project xmlns=\"http://maven.apache.org/POM/4.0.0\""
+                    + " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+                    + " xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0"
+                    + " https://maven.apache.org/xsd/maven-4.0.0.xsd\">"
+                    + "<modelVersion>4.0.0</modelVersion><parent><groupId>" + xml(parentGroupId)
+                    + "</groupId><artifactId>" + xml(parentArtifactId) + "</artifactId><version>"
+                    + xml(parentVersion) + "</version><relativePath>" + xml(parentPom.getFileName().toString())
+                    + "</relativePath></parent><artifactId>smartdeptest-classpath-"
+                    + java.util.UUID.randomUUID() + "</artifactId><dependencies><dependency><groupId>"
+                    + xml(groupId) + "</groupId><artifactId>" + xml(artifactId) + "</artifactId><version>"
+                    + xml(version) + "</version><type>jar</type>"
+                    + (classifier.isBlank() ? "" : "<classifier>" + xml(classifier) + "</classifier>")
+                    + "<scope>compile</scope></dependency></dependencies></project>";
+            Path wrapperPom = Files.createTempFile(projectPom.getParent(), ".smartdeptest-classpath-", ".pom");
+            Files.writeString(wrapperPom, wrapper);
+            return new ClasspathPom(wrapperPom, parentPom);
+        } catch (IOException exception) {
+            if (parentPom != null) Files.deleteIfExists(parentPom);
+            throw exception;
+        } catch (Exception exception) {
+            if (parentPom != null) Files.deleteIfExists(parentPom);
+            throw new IOException("Could not create a temporary API classpath POM for " + projectPom + ".", exception);
+        }
+    }
+
+    private record ClasspathPom(Path wrapper, Path parent) {}
+
+    private static Element child(Element parent, String name) {
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (node instanceof Element element && localName(element).equals(name)) return element;
+        }
+        return null;
+    }
+
+    private static String childText(Element parent, String name) {
+        Element element = child(parent, name);
+        return element == null ? "" : element.getTextContent().trim();
+    }
+
+    private static String localName(Element element) {
+        return element.getLocalName() == null ? element.getTagName() : element.getLocalName();
+    }
+
+    private static String resolveProperties(String value, Map<String, String> properties) {
+        String resolved = value;
+        for (int attempt = 0; attempt < properties.size(); attempt++) {
+            Matcher matcher = Pattern.compile("\\$\\{([^}]+)}").matcher(resolved);
+            StringBuffer result = new StringBuffer();
+            boolean replaced = false;
+            while (matcher.find()) {
+                String property = properties.get(matcher.group(1));
+                if (property != null) {
+                    matcher.appendReplacement(result, Matcher.quoteReplacement(property));
+                    replaced = true;
+                }
+            }
+            matcher.appendTail(result);
+            resolved = result.toString();
+            if (!replaced) break;
+        }
+        return resolved;
+    }
+
+    private static String xml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&apos;");
     }
 
     static String runWithCachedMissRetry(MavenInvoker mavenInvoker, Path workingDirectory,

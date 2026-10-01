@@ -25,7 +25,20 @@ class MavenArtifactResolverTest {
         Path modulePom = project.resolve("module-a/pom.xml");
         List<Invocation> invocations = new ArrayList<>();
         MavenArtifactResolver resolver = new MavenArtifactResolver((workingDirectory, arguments) -> {
-            invocations.add(new Invocation(workingDirectory, arguments));
+            Path invokedPom = Path.of(arguments.get(arguments.indexOf("-f") + 1));
+            StringBuilder pomContents = new StringBuilder(Files.readString(invokedPom));
+            if (arguments.stream().anyMatch(argument -> argument.endsWith(":build-classpath"))) {
+                try (var files = Files.list(invokedPom.getParent())) {
+                    for (Path path : files.filter(file -> file.getFileName().toString()
+                            .startsWith(".smartdeptest-parent-")).toList()) {
+                        pomContents.append(Files.readString(path));
+                    }
+                }
+                if (!pomContents.toString().contains("<packaging>pom</packaging>")) {
+                    throw new IOException("Invalid packaging for parent POM; must be pom.");
+                }
+            }
+            invocations.add(new Invocation(workingDirectory, arguments, pomContents.toString()));
             if (arguments.stream().anyMatch(argument -> argument.endsWith(":copy"))) {
                 String coordinateText = argumentValue(arguments, "-Dartifact=");
                 String[] coordinate = coordinateText.split(":");
@@ -55,19 +68,33 @@ class MavenArtifactResolverTest {
         assertTrue(Files.isRegularFile(newArtifact.jar()));
         assertTrue(oldArtifact.source().startsWith("target-custom-repository"));
         assertTrue(newArtifact.source().startsWith("central"));
-        assertEquals(3, invocations.size());
+        assertEquals(4, invocations.size());
         for (Invocation invocation : invocations) {
             assertEquals(project.toAbsolutePath().normalize(), invocation.workingDirectory());
             assertFalse(invocation.arguments().contains("-U"));
+        }
+        assertEquals(2, invocations.stream().filter(invocation -> invocation.arguments().stream()
+            .anyMatch(argument -> argument.endsWith(":copy"))).count());
+        List<Invocation> classpathInvocations = invocations.stream().filter(invocation -> invocation.arguments()
+            .stream().anyMatch(argument -> argument.endsWith(":build-classpath"))).toList();
+        assertEquals(2, classpathInvocations.size());
+        assertTrue(classpathInvocations.stream().anyMatch(invocation -> invocation.pomContents()
+            .contains("<version>old-version</version>")));
+        assertTrue(classpathInvocations.stream().anyMatch(invocation -> invocation.pomContents()
+            .contains("<version>new-version</version>")));
+        assertTrue(classpathInvocations.stream().allMatch(invocation -> invocation.pomContents()
+            .contains("<id>target-custom-repository</id>")));
+        assertTrue(Files.readString(modulePom).contains("<packaging>maven-plugin</packaging>"));
+        for (Invocation invocation : invocations.stream().filter(item -> item.arguments().stream()
+            .anyMatch(argument -> argument.endsWith(":copy"))).toList()) {
             int pomOption = invocation.arguments().indexOf("-f");
             assertEquals(modulePom.toAbsolutePath().normalize().toString(),
-                    invocation.arguments().get(pomOption + 1));
+                invocation.arguments().get(pomOption + 1));
         }
         assertTrue(invocations.get(0).arguments().stream().anyMatch(value -> value.contains("old-version")));
         assertTrue(invocations.get(1).arguments().stream().anyMatch(value -> value.contains("new-version")));
         assertTrue(invocations.get(0).arguments().stream().anyMatch(value -> value.startsWith("-Dartifact=")));
         assertTrue(invocations.get(0).arguments().stream().noneMatch(value -> value.contains("stripVersion")));
-        assertTrue(invocations.get(2).arguments().stream().anyMatch(value -> value.endsWith(":build-classpath")));
         assertEquals(oldArtifact.jar(), oldClasspath.get(0));
         assertEquals(newArtifact.jar(), classpath.get(0));
     }
@@ -121,10 +148,16 @@ class MavenArtifactResolverTest {
         Path project = temporaryDirectory.resolve("target-project");
         Path module = project.resolve("module-a");
         Files.createDirectories(module);
-        Files.writeString(project.resolve("pom.xml"), "<project/>", StandardCharsets.UTF_8);
-        Files.writeString(module.resolve("pom.xml"),
-                "<project><repositories><repository><id>target-custom-repository</id></repository>"
-                        + "</repositories></project>", StandardCharsets.UTF_8);
+        Files.writeString(project.resolve("pom.xml"), "<project><modelVersion>4.0.0</modelVersion>"
+            + "<groupId>org.example</groupId><artifactId>target-parent</artifactId><version>1.0</version>"
+            + "<packaging>pom</packaging>"
+            + "</project>", StandardCharsets.UTF_8);
+        Files.writeString(module.resolve("pom.xml"), "<project><modelVersion>4.0.0</modelVersion>"
+            + "<parent><groupId>org.example</groupId><artifactId>target-parent</artifactId>"
+            + "<version>1.0</version><relativePath>../pom.xml</relativePath></parent>"
+            + "<artifactId>target-module</artifactId><packaging>maven-plugin</packaging>"
+            + "<repositories><repository>"
+            + "<id>target-custom-repository</id></repository></repositories></project>", StandardCharsets.UTF_8);
         return project;
     }
 
@@ -133,7 +166,11 @@ class MavenArtifactResolverTest {
                 .map(argument -> argument.substring(prefix.length())).findFirst().orElseThrow();
     }
 
-    private record Invocation(Path workingDirectory, List<String> arguments) {
+    private record Invocation(Path workingDirectory, List<String> arguments, String pomContents) {
+        private Invocation(Path workingDirectory, List<String> arguments) {
+            this(workingDirectory, arguments, "");
+        }
+
         private Invocation {
             workingDirectory = workingDirectory.toAbsolutePath().normalize();
             arguments = List.copyOf(arguments);
