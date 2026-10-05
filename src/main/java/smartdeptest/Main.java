@@ -9,6 +9,9 @@ import smartdeptest.analysis.DependencyApiResult;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeDetector;
 import smartdeptest.dependency.DependencyChangeResult;
+import smartdeptest.graph.DependencyGraphBuilder;
+import smartdeptest.graph.DependencyGraphJsonExporter;
+import smartdeptest.graph.DependencyGraphResult;
 import org.objectweb.asm.Type;
 
 import java.nio.file.Files;
@@ -96,6 +99,11 @@ final class SmartDepTestRunner {
             APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(result);
             APIUsageResult usage = new APIUsageAnalyzer().analyze(apiChanges, project);
             printImpactReport(apiChanges, usage);
+                DependencyGraphResult graph = new DependencyGraphBuilder().build(apiChanges, usage);
+                Path graphOutput = project.toAbsolutePath().normalize()
+                    .resolve("target/smartdeptest-impact-graph.json");
+                new DependencyGraphJsonExporter().write(graph, graphOutput);
+                    printCallGraphAndPropagation(graph, graphOutput);
             System.out.printf("Dependency change detection time: %d ms.%n", dependencyNanos / 1_000_000);
             System.out.printf("Total API impact analysis time: %d ms.%n",
                 (System.nanoTime() - apiImpactStarted) / 1_000_000);
@@ -111,6 +119,37 @@ final class SmartDepTestRunner {
         } catch (LinkageError error) {
             System.out.println("ERROR: A runtime dependency could not be loaded. Run `mvn compile` first "
                 + "to stage the required dependencies. Details: " + error.getMessage());
+        }
+    }
+
+    private static void printCallGraphAndPropagation(DependencyGraphResult result, Path graphOutput) {
+        long callEdges = result.graph().getEdges().stream().filter(edge -> edge.type().equals("CALLS")).count();
+        System.out.println();
+        System.out.println("------------------------------------------------------------");
+        System.out.println("COMPONENT 6 - APPLICATION CALL GRAPH");
+        System.out.println("------------------------------------------------------------");
+        System.out.printf("Application method CALLS edges: %d%n", callEdges);
+        System.out.printf("Graph JSON: %s%n", graphOutput);
+        System.out.println();
+        System.out.println("------------------------------------------------------------");
+        System.out.println("COMPONENT 7 - IMPACT PROPAGATION");
+        System.out.println("------------------------------------------------------------");
+        printMethodSet("Directly impacted methods", result, result.directlyImpactedMethods());
+        printMethodSet("Indirectly affected callers (not necessarily broken)", result,
+                result.indirectlyAffectedMethods());
+        printMethodSet("All affected methods", result, result.allAffectedMethods());
+    }
+
+    private static void printMethodSet(String label, DependencyGraphResult result, List<String> methodIds) {
+        System.out.printf("%s: %d%n", label, methodIds.size());
+        if (methodIds.isEmpty()) {
+            System.out.println("NONE");
+            return;
+        }
+        for (String methodId : methodIds) {
+            var method = result.graph().getNode(methodId);
+            System.out.printf("- %s.%s%s%n", method.metadata().get("className"),
+                    method.metadata().get("methodName"), method.metadata().get("descriptor"));
         }
     }
 

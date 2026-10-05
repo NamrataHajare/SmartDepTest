@@ -2,12 +2,23 @@ package smartdeptest.analysis;
 
 import java.util.List;
 
-public record APIUsageResult(String projectPath, List<DependencyImpact> dependencies) {
+public record APIUsageResult(String projectPath, List<DependencyImpact> dependencies,
+                             List<ApplicationCall> applicationCalls) {
     public enum Classification { POTENTIAL_IMPACT, NO_IDENTIFIED_IMPACT, ANALYSIS_UNAVAILABLE }
+
+    public APIUsageResult(String projectPath, List<DependencyImpact> dependencies) {
+        this(projectPath, dependencies, List.of());
+    }
 
     public APIUsageResult {
         dependencies = List.copyOf(dependencies);
+        applicationCalls = List.copyOf(applicationCalls);
     }
+
+    public record ApplicationCall(String sourceClassName, String sourceMethodName,
+                                  String sourceMethodDescriptor, String targetClassName,
+                                  String targetMethodName, String targetMethodDescriptor,
+                                  String instructionType) {}
 
     public record DependencyImpact(String dependencyKey, String oldVersion, String newVersion,
                                    String oldClassifier, String newClassifier, String pomPath,

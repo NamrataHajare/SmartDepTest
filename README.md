@@ -9,7 +9,8 @@ SmartDepTest finds a Maven dependency change, compares the old and new dependenc
 3. It searches first-parent Git history for commits that changed those files.
 4. For each commit, it compares the POM before and after that commit.
 5. It compares old/new dependency JAR APIs.
-6. It scans relevant module `target/classes` output and reports application classes and methods that reference changed APIs.
+6. It asks Maven for each relevant module's effective compiled output directory, scans those class files, and reports application methods that reference changed APIs.
+7. It builds application method-to-method `CALLS` edges and propagates direct impact backwards through callers.
 
 **Important:** it does not always compare only the two newest commits. It skips POM commits that do not change a dependency and keeps searching older POM-changing commits until it finds a dependency change or reaches the available history.
 
@@ -45,6 +46,8 @@ java -cp target/classes smartdeptest.Main
 
 When prompted, enter the path to the Maven Git project you want to inspect. The existing Component 1 report appears first; API and application-impact analysis follows it.
 
+The run also writes `target/smartdeptest-impact-graph.json` inside the analyzed project. The JSON contains dependency, changed API, application class, and application method nodes; evidence-backed edges; direct and indirect affected method IDs; and direct impact paths. Application `CALLS` edges come from ASM invocation instructions whose target class, method, and descriptor were found in the analyzed application's compiled classes. Component 7 traverses those edges backwards from methods that directly use changed APIs; indirect callers are potentially affected, not definitely broken.
+
 You can pass the target path directly as well:
 
 ```powershell
@@ -53,7 +56,7 @@ java -cp target/classes smartdeptest.Main C:\path\to\target-application
 
 Maven stages the runtime JARs under `target/dependency`; `Main` loads them while keeping the project artifact's classes separate.
 
-Compile the target project's relevant modules first so their `target/classes` directories exist. From the target project root, run `mvn compile` before starting SmartDepTest.
+Compile the target project's relevant modules first. SmartDepTest reads the effective Maven build output directory, including custom compiler-plugin output directories; missing compiled classes are reported instead of treated as no impact. From the target project root, run `mvn compile` before starting SmartDepTest.
 
 For both dependency versions, the analyzer invokes Maven from the target project's directory and passes the POM that declared the change. Maven applies that project's repositories, parent configuration, user settings, mirrors, and local cache. Maven copies resolved JARs to a temporary analysis directory; SmartDepTest does not guess the local-repository path or alter the target POM. For application analysis, it asks Maven for each module's compile classpath and scans each relevant compiled class once. It does not inspect tests, execute the application, select tests, or analyze coverage. The report includes dependency-detection, JApiCmp, ASM, and total analysis timings.
 
@@ -71,6 +74,6 @@ java -Dsmartdeptest.git.timeout.seconds=300 -cp target/classes smartdeptest.Main
 
 ## Current limits
 
-The Component 1 parser resolves properties declared in the same POM and versions declared in that POM's dependency management. It compares declared POM entries; it does not resolve transitive dependency updates or build Maven's complete effective POM, so parent inheritance, profiles, and imported BOMs are not included. API impact analysis supports JAR dependencies and compiled `target/classes` output. It is static evidence, not a runtime or test result, and it does not select regression tests.
+The Component 1 parser resolves properties declared in the same POM and versions declared in that POM's dependency management. It compares declared POM entries; it does not resolve transitive dependency updates or build Maven's complete effective POM for dependency detection. ASM analysis supports Maven modules whose effective compiler output directories can be resolved and whose compiled bytecode is present. Results are static evidence, not runtime or test results; no test mapping or selection is performed.
 
 The history search has no fixed commit-count limit. A shallow Git clone only contains part of the history; if no change is found in the available portion, the program asks you to fetch more history.

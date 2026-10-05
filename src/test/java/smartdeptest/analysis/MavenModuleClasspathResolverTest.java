@@ -20,6 +20,62 @@ class MavenModuleClasspathResolverTest {
     Path temporaryDirectory;
 
     @Test
+    void resolvesCustomCompilerOutputFromMavenEffectivePom() throws Exception {
+        Path project = temporaryDirectory.resolve("custom-output-project");
+        Path moduleDirectory = project.resolve("module-a");
+        Path modulePom = moduleDirectory.resolve("pom.xml");
+        Path customOutput = moduleDirectory.resolve("build/compiled-app").toAbsolutePath().normalize();
+        Files.createDirectories(moduleDirectory);
+        Files.createDirectories(project);
+        Files.writeString(modulePom, "<project/>", StandardCharsets.UTF_8);
+        MavenModuleClasspathResolver resolver = new MavenModuleClasspathResolver((workingDirectory, arguments) -> {
+            String outputArgument = arguments.stream().filter(argument -> argument.startsWith("-Doutput="))
+                    .findFirst().orElseThrow();
+            String effectivePom = "<project><build><outputDirectory>" + moduleDirectory.resolve("build/classes")
+                    + "</outputDirectory><plugins><plugin><artifactId>maven-compiler-plugin</artifactId>"
+                    + "<configuration><outputDirectory>" + customOutput
+                    + "</outputDirectory></configuration></plugin></plugins></build></project>";
+            Files.writeString(Path.of(outputArgument.substring("-Doutput=".length())), effectivePom,
+                    StandardCharsets.UTF_8);
+            return "effective model resolved";
+        });
+        ApplicationModule module = new ApplicationModule(project, moduleDirectory, modulePom,
+                List.of(), true);
+
+        List<Path> outputs = resolver.resolveOutputDirectories(module);
+
+        assertEquals(List.of(customOutput), outputs);
+    }
+
+        @Test
+        void discoversUncompiledModuleWithConfiguredMainSourceDirectory() throws Exception {
+                Path project = temporaryDirectory.resolve("custom-source-project");
+                Path moduleDirectory = project.resolve("module-a");
+                Path modulePom = moduleDirectory.resolve("pom.xml");
+                Path customSource = moduleDirectory.resolve("src/application/java");
+                Path customOutput = moduleDirectory.resolve("build/application-classes");
+                Files.createDirectories(customSource);
+                Files.createDirectories(project);
+                Files.writeString(project.resolve("pom.xml"), "<project/>", StandardCharsets.UTF_8);
+                Files.writeString(modulePom, "<project><build><sourceDirectory>src/application/java</sourceDirectory>"
+                                + "<outputDirectory>build/application-classes</outputDirectory></build></project>",
+                                StandardCharsets.UTF_8);
+                MavenModuleClasspathResolver resolver = new MavenModuleClasspathResolver() {
+                        @Override
+                        List<Path> resolveOutputDirectories(ApplicationModule module) {
+                                return List.of(customOutput);
+                        }
+                };
+
+                List<ApplicationModule> modules = new ApplicationModuleScanner(resolver).discover(project);
+
+                assertEquals(1, modules.size());
+                assertTrue(modules.get(0).hasMainSources());
+                assertEquals(List.of(customOutput), modules.get(0).classesDirectories());
+                assertFalse(Files.exists(customOutput));
+        }
+
+    @Test
     void resolvesModuleClasspathThroughRootReactorAndAlsoMakesDependencies() throws Exception {
         Path project = temporaryDirectory.resolve("project");
         Path moduleDirectory = project.resolve("sponge");

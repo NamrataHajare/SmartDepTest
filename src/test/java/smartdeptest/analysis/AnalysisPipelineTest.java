@@ -8,6 +8,9 @@ import org.objectweb.asm.Opcodes;
 import smartdeptest.dependency.Dependency;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeResult;
+import smartdeptest.graph.DependencyGraphBuilder;
+import smartdeptest.graph.DependencyGraphResult;
+import smartdeptest.graph.GraphEdge;
 
 import javax.tools.ToolProvider;
 import java.io.IOException;
@@ -16,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
@@ -294,6 +298,136 @@ class AnalysisPipelineTest {
     }
 
     @Test
+    void applicationCallsBuildCallGraphAndPropagateImpactToCallers() throws Exception {
+        Path localRepository = localRepository();
+        createLibraryJar(localRepository, "1.0",
+                "package org.example; public class Service { public void removed() {} }");
+        createLibraryJar(localRepository, "2.0", "package org.example; public class Service { }");
+        Path project = createProject();
+        writeSource(project, "module-a", "com.example.CallerA",
+                "package com.example; public class CallerA { "
+                        + "public void first(CallerB b) { b.second(); } "
+                        + "public static void staticFirst() { CallerB.staticTarget(); } "
+                        + "public void interfaceCall(Worker worker) { worker.execute(); } }");
+        writeSource(project, "module-a", "com.example.CallerB",
+                "package com.example; public class CallerB { "
+                        + "public void second() { new CallerC().third(); } "
+                        + "public static void staticTarget() {} }");
+        writeSource(project, "module-a", "com.example.CallerC",
+                "package com.example; import org.example.Service; public class CallerC { "
+                        + "public void third() { new Service().removed(); } }");
+        writeSource(project, "module-a", "com.example.Worker",
+                "package com.example; public interface Worker { void execute(); }");
+
+        APIChangeResult apiChanges = analyzeApiChange(localRepository, project, "1.0", "2.0");
+        APIUsageResult usage = analyzeUsage(localRepository, apiChanges, project);
+
+        assertTrue(usage.applicationCalls().stream().anyMatch(call -> call.instructionType().equals("INVOKEVIRTUAL")));
+        assertTrue(usage.applicationCalls().stream().anyMatch(call -> call.instructionType().equals("INVOKESTATIC")));
+        assertTrue(usage.applicationCalls().stream().anyMatch(call -> call.instructionType().equals("INVOKESPECIAL")));
+        assertTrue(usage.applicationCalls().stream().anyMatch(call -> call.instructionType().equals("INVOKEINTERFACE")));
+        assertFalse(usage.applicationCalls().stream()
+                .anyMatch(call -> call.targetClassName().equals("org/example/Service")));
+
+        DependencyGraphResult result = new DependencyGraphBuilder().build(apiChanges, usage);
+        assertEquals(1, result.directlyImpactedMethods().size());
+        assertEquals(2, result.indirectlyAffectedMethods().size());
+        assertEquals(3, result.allAffectedMethods().size());
+        assertEquals(Set.of("com.example.CallerB#second", "com.example.CallerA#first"),
+                methodNames(result, result.indirectlyAffectedMethods()));
+        assertTrue(result.graph().getEdges().stream()
+                .filter(edge -> edge.type().equals("CALLS"))
+                .allMatch(edge -> result.graph().getNode(edge.source()).type()
+                                == smartdeptest.graph.GraphNode.Type.METHOD
+                        && result.graph().getNode(edge.target()).type()
+                                == smartdeptest.graph.GraphNode.Type.METHOD));
+        assertTrue(result.graph().getEdges().stream()
+                .filter(edge -> edge.target().startsWith("api:"))
+                .filter(edge -> result.graph().getNode(edge.source()).type()
+                        == smartdeptest.graph.GraphNode.Type.METHOD)
+                .allMatch(edge -> edge.type().equals("USES")));
+        Set<String> graphCallOpcodes = result.graph().getEdges().stream()
+                .filter(edge -> edge.type().equals("CALLS"))
+                .flatMap(edge -> ((List<?>) edge.metadata().get("instructionTypes")).stream())
+                .map(String.class::cast).collect(java.util.stream.Collectors.toSet());
+        assertTrue(graphCallOpcodes.containsAll(Set.of(
+                "INVOKEVIRTUAL", "INVOKESTATIC", "INVOKESPECIAL", "INVOKEINTERFACE")));
+    }
+
+        @Test
+        void findsDirectApiUsageInCustomMavenCompilerOutputDirectory() throws Exception {
+                Path localRepository = localRepository();
+                createLibraryJar(localRepository, "1.0", "package org.example; public class Service { "
+                                + "public void removed() {} }");
+                createLibraryJar(localRepository, "2.0", "package org.example; public class Service {} ");
+                Path project = createProject();
+                writeSource(project, "module-a", "com.example.App",
+                                "package com.example; import org.example.Service; public class App { "
+                                                + "public void invoke() { new Service().removed(); } }");
+                APIChangeResult apiChanges = analyzeApiChange(localRepository, project, "1.0", "2.0");
+                Path oldJar = Path.of(apiChanges.dependencies().get(0).oldArtifactPath());
+                compileApplicationClasses(project, List.of("module-a"), oldJar);
+
+                Path moduleDirectory = project.resolve("module-a");
+                Path customOutput = moduleDirectory.resolve("build/application-classes").toAbsolutePath().normalize();
+                Files.createDirectories(customOutput.getParent());
+                Files.move(moduleDirectory.resolve("target/classes"), customOutput);
+                Files.writeString(moduleDirectory.resolve("pom.xml"),
+                                "<project><build><outputDirectory>" + customOutput + "</outputDirectory></build></project>",
+                                StandardCharsets.UTF_8);
+                Path updatedJar = Path.of(apiChanges.dependencies().get(0).newArtifactPath());
+                MavenModuleClasspathResolver resolver = new MavenModuleClasspathResolver() {
+                        @Override
+                        List<Path> resolveOutputDirectories(ApplicationModule module) {
+                                return List.of(customOutput);
+                        }
+
+                        @Override
+                        List<Path> resolve(ApplicationModule module) {
+                                return List.of(updatedJar);
+                        }
+                };
+
+                APIUsageResult usage = new APIUsageAnalyzer(resolver).analyze(apiChanges, project);
+
+                assertEquals(APIUsageResult.Classification.POTENTIAL_IMPACT, usage.dependencies().get(0).classification());
+                APIUsageResult.UsageLocation location = usage.dependencies().get(0).findings().stream()
+                                .filter(APIUsageResult.UsageFinding::used).flatMap(finding -> finding.locations().stream())
+                                .findFirst().orElseThrow();
+                assertEquals("invoke", location.methodName());
+        }
+
+    @Test
+    void applicationCallGraphIsCollectedWithoutChangedApiSeeds() throws Exception {
+        Path localRepository = localRepository();
+        createLibraryJar(localRepository, "1.0", "package org.example; public class Service {} ");
+        Path project = createProject();
+        writeSource(project, "module-a", "com.example.CallSource",
+                "package com.example; public class CallSource { "
+                        + "public void forward(CallTarget target) { target.run(); } }");
+        writeSource(project, "module-a", "com.example.CallTarget",
+                "package com.example; public class CallTarget { public void run() {} }");
+        Path dependencyJar = localRepository.resolve("org/example/sample-library/1.0/sample-library-1.0.jar");
+        compileApplicationClasses(project, List.of("module-a"), dependencyJar);
+
+        APIChangeResult noChanges = new APIChangeResult(project.toString(), List.of());
+        APIUsageResult usage = new APIUsageAnalyzer().analyze(noChanges, project);
+        DependencyGraphResult graph = new DependencyGraphBuilder().build(noChanges, usage);
+
+        assertEquals(1, usage.applicationCalls().size());
+        assertEquals(1, graph.graph().getEdges().stream().filter(edge -> edge.type().equals("CALLS")).count());
+        assertTrue(graph.directlyImpactedMethods().isEmpty());
+        assertTrue(graph.indirectlyAffectedMethods().isEmpty());
+        assertTrue(graph.allAffectedMethods().isEmpty());
+    }
+
+    private static Set<String> methodNames(DependencyGraphResult result, List<String> methodIds) {
+        return methodIds.stream().map(id -> result.graph().getNode(id))
+                .map(node -> node.metadata().get("className") + "#" + node.metadata().get("methodName"))
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    @Test
     void reportsSeveralChangedApisIndividuallyWhenOnlyOneIsUsed() throws Exception {
         Path localRepository = localRepository();
         createLibraryJar(localRepository, "1.0", "package org.example; public class Service { "
@@ -335,6 +469,11 @@ class AnalysisPipelineTest {
                 APIChangeResult apiChanges = analyzeApiChange(localRepository, project, "1.0", "2.0");
                 Path updatedJar = localRepository.resolve("org/example/sample-library/2.0/sample-library-2.0.jar");
                 MavenModuleClasspathResolver classpath = new MavenModuleClasspathResolver() {
+                        @Override
+                        List<Path> resolveOutputDirectories(ApplicationModule module) {
+                                return List.of(module.moduleDirectory().resolve("target/classes"));
+                        }
+
                         @Override
                         List<Path> resolve(ApplicationModule module) {
                                 return List.of(updatedJar);
@@ -489,6 +628,11 @@ class AnalysisPipelineTest {
                 Path updatedJar = localRepository.resolve(GROUP_ID.replace('.', '/')).resolve(ARTIFACT_ID)
                                 .resolve(dependency.newVersion()).resolve(ARTIFACT_ID + "-" + dependency.newVersion() + ".jar");
         MavenModuleClasspathResolver noMavenResolution = new MavenModuleClasspathResolver() {
+                        @Override
+                        List<Path> resolveOutputDirectories(ApplicationModule module) {
+                                return List.of(module.moduleDirectory().resolve("target/classes"));
+                        }
+
             @Override
             List<Path> resolve(ApplicationModule module) {
                                 return dependencyModules.contains(module.moduleDirectory().getFileName().toString())

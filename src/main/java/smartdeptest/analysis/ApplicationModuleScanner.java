@@ -13,6 +13,12 @@ import java.util.List;
 import java.util.Map;
 
 final class ApplicationModuleScanner {
+    private final MavenModuleClasspathResolver outputResolver;
+
+    ApplicationModuleScanner(MavenModuleClasspathResolver outputResolver) {
+        this.outputResolver = outputResolver;
+    }
+
     List<ApplicationModule> discover(Path projectDirectory) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
         Map<Path, Path> modulePoms = new LinkedHashMap<>();
@@ -23,33 +29,64 @@ final class ApplicationModuleScanner {
                         || directory.getFileName().toString().equals("node_modules"))) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
-                if (Files.isDirectory(directory.resolve("src/main/java"))
-                        || Files.isDirectory(directory.resolve("target/classes"))) {
-                    Path pom = findPom(directory, projectRoot);
-                    if (pom != null) modulePoms.put(pom.getParent(), pom);
-                }
                 if (directory.getFileName().toString().equals("target")) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
+                Path pom = directory.resolve("pom.xml");
+                if (Files.isRegularFile(pom)) modulePoms.put(directory, pom);
                 return FileVisitResult.CONTINUE;
             }
         });
 
         List<ApplicationModule> modules = new ArrayList<>();
         for (Map.Entry<Path, Path> module : modulePoms.entrySet()) {
-            modules.add(new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
-                    module.getKey().resolve("target/classes")));
+            boolean hasMainSources = Files.isDirectory(module.getKey().resolve("src/main/java"))
+                    || Files.isDirectory(module.getKey().resolve("src/main/kotlin"))
+                    || Files.isDirectory(module.getKey().resolve("src/main/scala"));
+            boolean hasConfiguredSources = hasSourceDirectoryConfiguration(module.getKey(), projectRoot);
+            boolean hasApplicationSources = hasMainSources || hasConfiguredSources;
+            boolean hasDefaultOutput = Files.isDirectory(module.getKey().resolve("target/classes"));
+            if (!hasApplicationSources && !hasDefaultOutput
+                    && !hasBuildDiscoveryConfiguration(module.getKey(), projectRoot)) continue;
+            ApplicationModule unresolved = new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
+                    List.of(), hasApplicationSources);
+            List<Path> classesDirectories;
+            try {
+                classesDirectories = outputResolver.resolveOutputDirectories(unresolved);
+            } catch (IOException exception) {
+                if (hasApplicationSources || hasDefaultOutput) {
+                    throw exception;
+                }
+                continue;
+            }
+            if (hasApplicationSources || classesDirectories.stream().anyMatch(Files::isDirectory)) {
+                modules.add(new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
+                        classesDirectories, hasApplicationSources));
+            }
         }
         modules.sort(Comparator.comparing(module -> module.moduleDirectory().toString()));
         return List.copyOf(modules);
     }
 
-    private static Path findPom(Path moduleDirectory, Path projectRoot) {
+    private static boolean hasBuildDiscoveryConfiguration(Path moduleDirectory, Path projectRoot) throws IOException {
         for (Path directory = moduleDirectory; directory != null && directory.startsWith(projectRoot);
              directory = directory.getParent()) {
             Path pom = directory.resolve("pom.xml");
-            if (Files.isRegularFile(pom)) return pom;
+            if (!Files.isRegularFile(pom)) continue;
+            String contents = Files.readString(pom);
+            if (contents.contains("<outputDirectory") || contents.contains("<directory>")
+                    || contents.contains("<sourceDirectory")) return true;
         }
-        return null;
+        return false;
+    }
+
+    private static boolean hasSourceDirectoryConfiguration(Path moduleDirectory, Path projectRoot)
+            throws IOException {
+        for (Path directory = moduleDirectory; directory != null && directory.startsWith(projectRoot);
+             directory = directory.getParent()) {
+            Path pom = directory.resolve("pom.xml");
+            if (Files.isRegularFile(pom) && Files.readString(pom).contains("<sourceDirectory")) return true;
+        }
+        return false;
     }
 }

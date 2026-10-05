@@ -14,8 +14,9 @@ Project folder
 	-> report the newest commit with a dependency change
 	-> compare the dependency's old/new JAR APIs
 	-> normalize changed API owners and JVM descriptors
-	-> scan relevant target/classes bytecode once with ASM
+	-> resolve Maven module output directories and scan compiled bytecode once with ASM
 	-> report application classes/methods that reference changed APIs
+	-> build application method CALLS edges and propagate impact backwards through callers
 ```
 
 ## Step 1: Find the project POM files
@@ -129,11 +130,13 @@ Each dependency result is `ANALYZED` with zero or more changes, or `UNAVAILABLE`
 
 ## Step 10: Scan compiled application bytecode
 
-`ApplicationModuleScanner` discovers Maven modules from standard `src/main/java` roots or existing `target/classes` output and associates each with its nearest `pom.xml`. The application must be compiled before analysis; missing bytecode for a relevant module is `ANALYSIS_UNAVAILABLE`, not “no impact.”
+`ApplicationModuleScanner` discovers Maven modules from JVM source roots, existing compiled outputs, and Maven output configuration. For each candidate module, it asks Maven for the effective POM and resolves the project build output plus any configured `maven-compiler-plugin` compile output directory. The default Maven output is used only as a fallback when Maven model resolution fails and that directory exists. Multiple Maven modules and multiple configured output directories are scanned. The application must be compiled before analysis; missing bytecode for a relevant module is `ANALYSIS_UNAVAILABLE`, not “no impact.”
 
 `MavenModuleClasspathResolver` asks Maven's `dependency:build-classpath` goal for each module's compile classpath. For a multi-module project, it first invokes Maven from the project root with `-f <root pom> -pl <module path> -am`; this includes required sibling SNAPSHOT projects in the reactor. If the root POM is not a usable reactor, it retries with the module POM directly. The classpath output goes to a temporary file and is removed.
 
-`BytecodeAPIUsageAnalyzer` builds hash-based keys from owner/name/descriptor (or owner/name/field descriptor), then walks each relevant module's class files once. It reads method invocation instructions, field instructions, class/type references, descriptor types, and method handles. When a reference owner inherits a changed method or field, it resolves cached class headers through the superclass/interface chain; a nearer declaration stops the search so an override is not attributed to the changed ancestor. Each match records the application internal class name, method name and descriptor, and instruction kind. A changed dependency is associated with a module only when it appears on that module's Maven compile classpath.
+`BytecodeAPIUsageAnalyzer` builds hash-based keys from owner/name/descriptor (or owner/name/field descriptor), then walks each discovered application output directory once. It reads method invocation instructions, field instructions, class/type references, descriptor types, and method handles. Invocation records are retained as application calls only when the target owner/name/descriptor matches a method declared in discovered application bytecode; external dependency methods do not become application method nodes. When a reference owner inherits a changed method or field, it resolves cached class headers through the superclass/interface chain; a nearer declaration stops the search so an override is not attributed to the changed ancestor. Each match records the application internal class name, method name and descriptor, and instruction kind. A changed dependency is associated with a module only when it appears on that module's Maven compile classpath.
+
+Component 6 represents changed dependency API use as `METHOD --USES--> API`, and application invocation instructions as `METHOD --CALLS--> METHOD`. Component 7 performs BFS over incoming `CALLS` edges from directly impacted methods. Direct methods, indirect callers, and their union are deduplicated; visited IDs prevent recursion/cycles from looping.
 
 Changed APIs are reported independently from their usages. An added or modified API with no bytecode match has no identified application impact; a matched changed API is reported as a potential impact. Abstract contract additions also match classes that implement or extend the declaring type.
 
@@ -143,7 +146,7 @@ Changed APIs are reported independently from their usages. An added or modified 
 | --- | --- |
 | `POTENTIAL_IMPACT` | ASM found at least one application bytecode reference to a changed API. This does not prove a runtime failure. |
 | `NO_IDENTIFIED_IMPACT` | API comparison completed and no changed API reference was found in scanned application bytecode. |
-| `ANALYSIS_UNAVAILABLE` | An artifact, relevant `target/classes`, Maven classpath, or class file could not be analyzed completely; a negative result would not be trustworthy. |
+| `ANALYSIS_UNAVAILABLE` | An artifact, relevant Maven output directory, Maven classpath, or class file could not be analyzed completely; a negative result would not be trustworthy. |
 
 The report lists changed APIs even when none are used. For a modified method, references matching either old or new descriptor are retained; removed methods and fields match their old descriptors. Impact is bytecode evidence only and does not establish a runtime failure.
 
@@ -151,7 +154,7 @@ The report lists changed APIs even when none are used. For a modified method, re
 
 - Component 1's selected parent/candidate versions remain the sole source of dependency-change facts; Components 2–3 do not inspect commit messages or repeat Git detection.
 - JAR analysis uses public/protected declarations, not implementation bytecode. It does not establish behavioral compatibility, runtime linkage, reflection strings, dynamically loaded classes, or service configuration changes.
-- Bytecode analysis covers compiled classes under Maven `target/classes`; test output, reflection strings, dynamically loaded classes, and nonstandard output directories are not included. A module is checked for a changed dependency only if that artifact is on the module's Maven compile classpath.
+- Bytecode analysis covers compiled classes in output directories reported by the Maven effective model; test output, reflection strings, and dynamically loaded classes are not included. A module is checked for a changed dependency only if that artifact is on the module's Maven compile classpath.
 - Maven is asked for each module's compile classpath. Uncached project compile dependencies or Maven plugins may be downloaded by Maven. The application is not run, and its POM is not changed.
 - The project must be compiled before analysis. Missing or malformed class files prevent a “no impact” conclusion for the affected module.
 - Component 1 compares declared POM entries and dependency-management entries; it does not resolve transitive dependency changes. No direct/transitive status is inferred from bytecode.

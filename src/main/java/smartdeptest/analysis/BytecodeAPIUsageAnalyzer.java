@@ -9,6 +9,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import smartdeptest.analysis.APIUsageResult.Classification;
 import smartdeptest.analysis.APIUsageResult.DependencyImpact;
+import smartdeptest.analysis.APIUsageResult.ApplicationCall;
 import smartdeptest.analysis.APIUsageResult.UsageFinding;
 import smartdeptest.analysis.APIUsageResult.UsageLocation;
 
@@ -28,11 +29,12 @@ import java.util.stream.Stream;
 import java.util.jar.JarFile;
 
 final class BytecodeAPIUsageAnalyzer {
-    private final ApplicationModuleScanner moduleScanner = new ApplicationModuleScanner();
     private final MavenModuleClasspathResolver classpathResolver;
+    private final ApplicationModuleScanner moduleScanner;
 
     BytecodeAPIUsageAnalyzer(MavenModuleClasspathResolver classpathResolver) {
         this.classpathResolver = classpathResolver;
+        this.moduleScanner = new ApplicationModuleScanner(classpathResolver);
     }
 
     APIUsageResult analyze(APIChangeResult apiChanges, Path projectDirectory) {
@@ -41,18 +43,27 @@ final class BytecodeAPIUsageAnalyzer {
                 .filter(result -> !result.changes().isEmpty())
                 .toList();
         if (analyzable.isEmpty()) {
-            return new APIUsageResult(apiChanges.projectPath(), apiChanges.dependencies().stream()
+            List<DependencyImpact> impacts = apiChanges.dependencies().stream()
                     .map(result -> impactWithoutBytecodeScan(result,
                             result.status() == DependencyApiResult.Status.ANALYZED
                                     ? Classification.NO_IDENTIFIED_IMPACT : Classification.ANALYSIS_UNAVAILABLE))
-                    .toList());
+                .toList();
+            try {
+                    UsageIndex usageIndex = indexUsages(analyzable, projectDirectory);
+                    return new APIUsageResult(apiChanges.projectPath(), impacts, usageIndex.applicationCalls());
+                } catch (Exception exception) {
+                    String message = exception.getMessage() == null
+                            ? exception.getClass().getSimpleName() : exception.getMessage();
+                    System.out.println("Application call graph discovery unavailable: " + message);
+                    return new APIUsageResult(apiChanges.projectPath(), impacts);
+            }
         }
 
         try {
             UsageIndex usageIndex = indexUsages(analyzable, projectDirectory);
             List<DependencyImpact> impacts = apiChanges.dependencies().stream()
                     .map(result -> buildImpact(result, usageIndex)).toList();
-            return new APIUsageResult(apiChanges.projectPath(), impacts);
+            return new APIUsageResult(apiChanges.projectPath(), impacts, usageIndex.applicationCalls());
         } catch (Exception exception) {
             String message = exception.getMessage() == null
                     ? exception.getClass().getSimpleName() : exception.getMessage();
@@ -64,42 +75,59 @@ final class BytecodeAPIUsageAnalyzer {
     private UsageIndex indexUsages(List<DependencyApiResult> analyzable, Path projectDirectory) throws IOException {
         List<ApplicationModule> modules = moduleScanner.discover(projectDirectory);
         if (modules.isEmpty()) {
-            throw new IOException("No Maven application modules with source roots or target/classes were found.");
+            throw new IOException("No Maven application modules with resolvable compiled output "
+                    + "or JVM source roots were found.");
         }
 
         Map<ApiReference, List<ImpactReference>> allReferences = buildReferenceIndex(analyzable);
         Map<ImpactReference, Set<UsageLocation>> locations = new HashMap<>();
         Set<Path> scannedClasses = new HashSet<>();
+        Set<ApplicationMethod> applicationMethods = new LinkedHashSet<>();
+        Set<ApplicationCall> applicationCalls = new LinkedHashSet<>();
         long asmNanos = 0;
 
         for (ApplicationModule module : modules) {
             List<DependencyApiResult> moduleDependencies = analyzable.stream()
                 .filter(dependency -> dependency.dependencyManagement()
                     || isDeclaredInModule(dependency, module)).toList();
-            if (moduleDependencies.isEmpty()) continue;
-            List<Path> classpath = classpathResolver.resolve(module);
-            Map<ApiReference, List<ImpactReference>> moduleReferences = referencesOnModuleClasspath(
-                moduleDependencies, allReferences, classpath);
-            if (moduleReferences.isEmpty()) continue;
-            if (!Files.isDirectory(module.classesDirectory())) {
-                throw new IOException("Application bytecode is missing: " + module.classesDirectory()
+            List<Path> classpath = moduleDependencies.isEmpty() ? List.of() : classpathResolver.resolve(module);
+            Map<ApiReference, List<ImpactReference>> moduleReferences = moduleDependencies.isEmpty()
+                    ? Map.of() : referencesOnModuleClasspath(moduleDependencies, allReferences, classpath);
+                List<Path> existingClassesDirectories = module.classesDirectories().stream()
+                    .filter(Files::isDirectory).toList();
+                if (existingClassesDirectories.size() != module.classesDirectories().size()) {
+                List<Path> missingDirectories = module.classesDirectories().stream()
+                    .filter(path -> !Files.isDirectory(path)).toList();
+                System.out.printf("Application bytecode output missing for module %s: %s%n",
+                    module.moduleDirectory(), missingDirectories);
+                }
+                if (existingClassesDirectories.isEmpty()) {
+                if (moduleReferences.isEmpty()) continue;
+                throw new IOException("Application bytecode is missing from Maven output directories: "
+                    + module.classesDirectories()
                         + ". Compile the relevant Maven module before API impact analysis.");
             }
 
             long scanStarted = System.nanoTime();
-        List<Path> hierarchyClasspath = new ArrayList<>(classpath);
-        moduleDependencies.stream().map(DependencyApiResult::oldArtifactPath)
-            .filter(path -> !path.isBlank()).map(Path::of).filter(Files::isRegularFile)
-            .map(path -> path.toAbsolutePath().normalize()).forEach(hierarchyClasspath::add);
-        int classCount = scanClasses(module, moduleReferences, locations, scannedClasses,
-            new ClassHierarchy(hierarchyClasspath.stream().distinct().toList()));
+            List<Path> hierarchyClasspath = new ArrayList<>(classpath);
+            moduleDependencies.stream().map(DependencyApiResult::oldArtifactPath)
+                    .filter(path -> !path.isBlank()).map(Path::of).filter(Files::isRegularFile)
+                    .map(path -> path.toAbsolutePath().normalize()).forEach(hierarchyClasspath::add);
+            int classCount = scanClasses(module, moduleReferences, locations, scannedClasses,
+                    new ClassHierarchy(hierarchyClasspath.stream().distinct().toList()),
+                    applicationMethods, applicationCalls);
             asmNanos += System.nanoTime() - scanStarted;
-            if (classCount == 0) {
-                throw new IOException("No application class files were found under " + module.classesDirectory());
+            if (classCount == 0 && !moduleReferences.isEmpty()) {
+                throw new IOException("No application class files were found under Maven output directories "
+                        + existingClassesDirectories);
             }
         }
         System.out.printf("ASM analysis completed in %d ms.%n", asmNanos / 1_000_000);
-        return new UsageIndex(locations);
+        List<ApplicationCall> callsToApplicationMethods = applicationCalls.stream()
+                .filter(call -> applicationMethods.contains(new ApplicationMethod(call.targetClassName(),
+                        call.targetMethodName(), call.targetMethodDescriptor())))
+                .toList();
+        return new UsageIndex(locations, callsToApplicationMethods);
     }
 
     private static boolean isDeclaredInModule(DependencyApiResult dependency, ApplicationModule module) {
@@ -186,20 +214,26 @@ final class BytecodeAPIUsageAnalyzer {
                                    Map<ApiReference, List<ImpactReference>> references,
                                    Map<ImpactReference, Set<UsageLocation>> locations,
                                    Set<Path> scannedClasses,
-                                   ClassHierarchy hierarchy) throws IOException {
+                                   ClassHierarchy hierarchy,
+                                   Set<ApplicationMethod> applicationMethods,
+                                   Set<ApplicationCall> applicationCalls) throws IOException {
         int count = 0;
-        try (Stream<Path> paths = Files.walk(module.classesDirectory())) {
-            for (Path classFile : paths.filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().endsWith(".class")).toList()) {
-                Path normalized = classFile.toAbsolutePath().normalize();
-                if (!scannedClasses.add(normalized)) continue;
-                count++;
-                try (InputStream input = Files.newInputStream(normalized)) {
-                    new ClassReader(input).accept(new UsageClassVisitor(references, locations, hierarchy),
-                            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-                } catch (IOException | RuntimeException exception) {
-                    throw new IOException("Unable to analyze application class " + normalized + ": "
-                            + exception.getMessage(), exception);
+        for (Path classesDirectory : module.classesDirectories()) {
+            if (!Files.isDirectory(classesDirectory)) continue;
+            try (Stream<Path> paths = Files.walk(classesDirectory)) {
+                for (Path classFile : paths.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".class")).toList()) {
+                    Path normalized = classFile.toAbsolutePath().normalize();
+                    if (!scannedClasses.add(normalized)) continue;
+                    count++;
+                    try (InputStream input = Files.newInputStream(normalized)) {
+                        new ClassReader(input).accept(new UsageClassVisitor(references, locations, hierarchy,
+                                        applicationMethods, applicationCalls),
+                                ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+                    } catch (IOException | RuntimeException exception) {
+                        throw new IOException("Unable to analyze application class " + normalized + ": "
+                                + exception.getMessage(), exception);
+                    }
                 }
             }
         }
@@ -314,21 +348,30 @@ final class BytecodeAPIUsageAnalyzer {
 
     private record ImpactReference(DependencyApiResult dependency, ApiChange change) {}
 
-    private record UsageIndex(Map<ImpactReference, Set<UsageLocation>> locations) {}
+    private record UsageIndex(Map<ImpactReference, Set<UsageLocation>> locations,
+                              List<ApplicationCall> applicationCalls) {}
+
+    private record ApplicationMethod(String className, String methodName, String descriptor) {}
 
     private static final class UsageClassVisitor extends ClassVisitor {
         private final Map<ApiReference, List<ImpactReference>> references;
         private final Map<ImpactReference, Set<UsageLocation>> locations;
         private final ClassHierarchy hierarchy;
+        private final Set<ApplicationMethod> applicationMethods;
+        private final Set<ApplicationCall> applicationCalls;
         private String className;
 
         private UsageClassVisitor(Map<ApiReference, List<ImpactReference>> references,
                                   Map<ImpactReference, Set<UsageLocation>> locations,
-                                  ClassHierarchy hierarchy) {
+                                  ClassHierarchy hierarchy,
+                                  Set<ApplicationMethod> applicationMethods,
+                                  Set<ApplicationCall> applicationCalls) {
             super(Opcodes.ASM9);
             this.references = references;
             this.locations = locations;
             this.hierarchy = hierarchy;
+            this.applicationMethods = applicationMethods;
+            this.applicationCalls = applicationCalls;
         }
 
         @Override
@@ -355,6 +398,7 @@ final class BytecodeAPIUsageAnalyzer {
         @Override
         public MethodVisitor visitMethod(int access, String name, String descriptor,
                                          String signature, String[] exceptions) {
+            applicationMethods.add(new ApplicationMethod(className, name, descriptor));
             UsageLocation methodLocation = new UsageLocation(className, name, descriptor, "METHOD_DESCRIPTOR");
             recordDescriptorTypes(references, locations, descriptor, methodLocation);
             return new MethodVisitor(Opcodes.ASM9) {
@@ -373,10 +417,15 @@ final class BytecodeAPIUsageAnalyzer {
                         default -> "METHOD_INSN_" + opcode;
                     };
                     UsageLocation use = location(instruction);
-                        recordMember(references, locations, hierarchy, ReferenceKind.METHOD,
+                    recordMember(references, locations, hierarchy, ReferenceKind.METHOD,
                             owner, methodName, methodDescriptor, use);
                     recordClassType(references, locations, owner, use);
                     recordDescriptorTypes(references, locations, methodDescriptor, use);
+                    String callInstruction = applicationCallInstruction(opcode);
+                    if (callInstruction != null) {
+                        applicationCalls.add(new ApplicationCall(className, name, descriptor, owner,
+                                methodName, methodDescriptor, callInstruction));
+                    }
                 }
 
                 @Override
@@ -434,6 +483,16 @@ final class BytecodeAPIUsageAnalyzer {
                 public void visitMultiANewArrayInsn(String descriptor, int dimensions) {
                     recordDescriptorTypes(references, locations, descriptor, location("MULTIANEWARRAY"));
                 }
+            };
+        }
+
+        private static String applicationCallInstruction(int opcode) {
+            return switch (opcode) {
+                case Opcodes.INVOKEVIRTUAL -> "INVOKEVIRTUAL";
+                case Opcodes.INVOKESTATIC -> "INVOKESTATIC";
+                case Opcodes.INVOKESPECIAL -> "INVOKESPECIAL";
+                case Opcodes.INVOKEINTERFACE -> "INVOKEINTERFACE";
+                default -> null;
             };
         }
     }
