@@ -29,11 +29,7 @@ Run these commands from the project folder in PowerShell:
 mvn test
 ```
 
-If Maven is not on `PATH`, run it using its full path:
-
-```powershell
-& "C:\Program Files\apache-maven-3.9.16\bin\mvn.cmd" test
-```
+Make sure Maven is installed and available on `PATH` before running the commands. The Maven installation path is machine-specific and is not configured in this project.
 
 Tests include dependency-history detection and offline synthetic-JAR tests for API changes, removed methods, overloaded descriptors, changed fields, multiple application callers, and impact classification. Test JARs are generated locally; they do not access Maven Central.
 
@@ -58,7 +54,7 @@ Maven stages the runtime JARs under `target/dependency`; `Main` loads them while
 
 Compile the target project's relevant modules first. SmartDepTest reads the effective Maven build output directory, including custom compiler-plugin output directories; missing compiled classes are reported instead of treated as no impact. From the target project root, run `mvn compile` before starting SmartDepTest.
 
-For both dependency versions, the analyzer invokes Maven from the target project's directory and passes the POM that declared the change. Maven applies that project's repositories, parent configuration, user settings, mirrors, and local cache. Maven copies resolved JARs to a temporary analysis directory; SmartDepTest does not guess the local-repository path or alter the target POM. For application analysis, it asks Maven for each module's compile classpath and scans each relevant compiled class once. It does not inspect tests, execute the application, select tests, or analyze coverage. The report includes dependency-detection, JApiCmp, ASM, and total analysis timings.
+For both dependency versions, the analyzer invokes Maven from the target project's directory and passes the POM that declared the change. Maven applies that project's repositories, parent configuration, user settings, mirrors, and local cache. Maven copies resolved JARs to a temporary analysis directory; SmartDepTest does not guess the local-repository path or alter the target POM. For application analysis, it asks Maven for each module's compile classpath and scans each relevant compiled class once. Components 8–10 inspect compiled JUnit/TestNG test methods in the current project's Maven modules and trace their bytecode invocations through the current application's `CALLS` graph. If test bytecode is missing or older than test sources, SmartDepTest runs Maven `test-compile` with tests skipped (and Checkstyle skipped); it does not run tests or change test sources. This identifies tests with a statically traceable path to each affected method without depending on aggregate JaCoCo XML, stale reports, test naming, or test pass/fail status. The enriched report is written to `target/smartdeptest-coverage-selection.json`.
 
 For a large repository, increase the Git command timeout from its 120-second default:
 
@@ -74,6 +70,6 @@ java -Dsmartdeptest.git.timeout.seconds=300 -cp target/classes smartdeptest.Main
 
 ## Current limits
 
-The Component 1 parser resolves properties declared in the same POM and versions declared in that POM's dependency management. It compares declared POM entries; it does not resolve transitive dependency updates or build Maven's complete effective POM for dependency detection. ASM analysis supports Maven modules whose effective compiler output directories can be resolved and whose compiled bytecode is present. Results are static evidence, not runtime or test results; no test mapping or selection is performed.
+The Component 1 parser resolves properties declared in the same POM and versions declared in that POM's dependency management. It compares declared POM entries; it does not resolve transitive dependency updates or build Maven's complete effective POM for dependency detection. ASM analysis supports Maven modules whose effective compiler output directories can be resolved and whose compiled bytecode is present. Components 8–10 report `NONE FOUND` only when no compiled test method has a static call path to that affected method. Reflection, dynamically loaded code, and paths outside the compiled application call graph cannot be attributed by this static analysis.
 
 The history search has no fixed commit-count limit. A shallow Git clone only contains part of the history; if no change is found in the available portion, the program asks you to fetch more history.

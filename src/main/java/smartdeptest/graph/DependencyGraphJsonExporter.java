@@ -50,7 +50,77 @@ public final class DependencyGraphJsonExporter {
             appendValue(json, path.instructionType());
             json.append('}');
         });
-        return json.append("]}").toString();
+        json.append(']');
+
+        if (!result.methodTestMapping().isEmpty()) {
+            json.append(",\"methodTestMapping\":[");
+            appendSeparated(json, result.methodTestMapping().iterator(), mapping -> {
+                json.append("{\"applicationMethod\":");
+                appendValue(json, mapping.applicationMethod());
+                json.append(",\"testClass\":");
+                appendValue(json, mapping.testClass());
+                json.append(",\"testMethod\":");
+                appendValue(json, mapping.testMethod());
+                json.append('}');
+            });
+            json.append(']');
+        }
+        if (!result.selectedTests().isEmpty()) {
+            json.append(",\"selectedTests\":");
+            appendValue(json, result.selectedTests());
+        }
+        if (!result.groupedSelectedTests().isEmpty()) {
+            json.append(",\"groupedSelectedTests\":[");
+            appendSeparated(json, result.groupedSelectedTests().iterator(), group -> {
+                json.append("{\"affectedMethod\":");
+                appendValue(json, group.affectedMethod());
+                json.append(",\"impactType\":");
+                appendValue(json, group.impactType());
+                json.append(",\"selectionStatus\":");
+                appendValue(json, group.selectionStatus());
+                json.append(",\"selectionNote\":");
+                appendValue(json, group.selectionNote());
+                json.append(",\"selectedTests\":");
+                appendValue(json, group.selectedTests());
+                json.append('}');
+            });
+            json.append(']');
+        }
+        if (!result.allAffectedMethods().isEmpty()) {
+            long methodsWithTests = result.groupedSelectedTests().stream()
+                    .filter(group -> !group.selectedTests().isEmpty()).count();
+            long methodsWithoutTests = result.groupedSelectedTests().stream()
+                    .filter(group -> "NONE FOUND".equals(group.selectionStatus())).count();
+            long methodsNotAnalyzed = result.groupedSelectedTests().stream()
+                    .filter(group -> "NOT ANALYZED".equals(group.selectionStatus())).count();
+            json.append(",\"regressionTestSummary\":{\"totalAffectedApplicationMethods\":");
+            appendValue(json, result.allAffectedMethods().size());
+            json.append(",\"affectedMethodsWithCoveringTests\":");
+            appendValue(json, methodsWithTests);
+            json.append(",\"affectedMethodsWithNoCoveringTests\":");
+            appendValue(json, methodsWithoutTests);
+            json.append(",\"affectedMethodsNotAnalyzed\":");
+            appendValue(json, methodsNotAnalyzed);
+            json.append(",\"uniqueSelectedRegressionTests\":");
+            appendValue(json, result.selectedTests().size());
+            json.append('}');
+        }
+        if (!result.testCoverageStatuses().isEmpty()) {
+            json.append(",\"testCoverageStatuses\":[");
+            appendSeparated(json, result.testCoverageStatuses().iterator(), test -> {
+                json.append("{\"testClass\":");
+                appendValue(json, test.testClass());
+                json.append(",\"testMethod\":");
+                appendValue(json, test.testMethod());
+                json.append(",\"status\":");
+                appendValue(json, test.status());
+                json.append(",\"note\":");
+                appendValue(json, test.note());
+                json.append('}');
+            });
+            json.append(']');
+        }
+        return json.append('}').toString();
     }
 
     public void write(DependencyGraphResult result, Path output) throws IOException {

@@ -6,6 +6,7 @@ import smartdeptest.analysis.APIUsageAnalyzer;
 import smartdeptest.analysis.APIUsageResult;
 import smartdeptest.analysis.ApiChange;
 import smartdeptest.analysis.DependencyApiResult;
+import smartdeptest.analysis.JacocoMethodTestMapper;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeDetector;
 import smartdeptest.dependency.DependencyChangeResult;
@@ -14,6 +15,7 @@ import smartdeptest.graph.DependencyGraphJsonExporter;
 import smartdeptest.graph.DependencyGraphResult;
 import org.objectweb.asm.Type;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.net.URL;
@@ -87,6 +89,10 @@ final class SmartDepTestRunner {
             System.out.print("Enter Maven project path:\n> ");
             input = new Scanner(System.in).nextLine().trim();
         }
+        if (input.length() >= 2 && ((input.startsWith("\"") && input.endsWith("\""))
+                || (input.startsWith("'") && input.endsWith("'")))) {
+            input = input.substring(1, input.length() - 1);
+        }
         if (input.isBlank()) { System.out.println("ERROR: Project directory does not exist."); return; }
         Path project = Path.of(input);
         if (!Files.isDirectory(project)) { System.out.println("ERROR: Project directory does not exist."); return; }
@@ -99,11 +105,11 @@ final class SmartDepTestRunner {
             APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(result);
             APIUsageResult usage = new APIUsageAnalyzer().analyze(apiChanges, project);
             printImpactReport(apiChanges, usage);
-                DependencyGraphResult graph = new DependencyGraphBuilder().build(apiChanges, usage);
-                Path graphOutput = project.toAbsolutePath().normalize()
-                    .resolve("target/smartdeptest-impact-graph.json");
-                new DependencyGraphJsonExporter().write(graph, graphOutput);
-                    printCallGraphAndPropagation(graph, graphOutput);
+            DependencyGraphResult graph = new DependencyGraphBuilder().build(apiChanges, usage);
+            Path graphOutput = project.toAbsolutePath().normalize().resolve("target/smartdeptest-impact-graph.json");
+            new DependencyGraphJsonExporter().write(graph, graphOutput);
+            printCallGraphAndPropagation(graph, graphOutput);
+            printCoverageAndRegressionSelection(graph, project);
             System.out.printf("Dependency change detection time: %d ms.%n", dependencyNanos / 1_000_000);
             System.out.printf("Total API impact analysis time: %d ms.%n",
                 (System.nanoTime() - apiImpactStarted) / 1_000_000);
@@ -114,7 +120,8 @@ final class SmartDepTestRunner {
             } else if (message != null && message.contains("Git is not installed")) {
                 System.out.println("ERROR: Git is not installed or is not available in PATH.");
             } else {
-                System.out.println("ERROR: " + (message == null ? "Dependency detection failed." : message));
+                System.out.println("ERROR: " + exception.getClass().getSimpleName()
+                        + (message == null || message.isBlank() ? "" : ": " + message));
             }
         } catch (LinkageError error) {
             System.out.println("ERROR: A runtime dependency could not be loaded. Run `mvn compile` first "
@@ -147,9 +154,90 @@ final class SmartDepTestRunner {
             return;
         }
         for (String methodId : methodIds) {
-            var method = result.graph().getNode(methodId);
-            System.out.printf("- %s.%s%s%n", method.metadata().get("className"),
-                    method.metadata().get("methodName"), method.metadata().get("descriptor"));
+            System.out.println("- " + displayMethod(result, methodId));
+        }
+    }
+
+    private static String displayMethod(DependencyGraphResult result, String methodId) {
+        var method = result.graph().getNode(methodId);
+        if (method == null) {
+            return methodId;
+        }
+        return method.metadata().get("className") + "." + method.metadata().get("methodName")
+                + method.metadata().get("descriptor");
+    }
+
+    private static void printCoverageAndRegressionSelection(DependencyGraphResult result, Path project) {
+        if (result.allAffectedMethods().isEmpty()) {
+            System.out.println();
+            System.out.println("------------------------------------------------------------");
+            System.out.println("COMPONENTS 8-10 - REGRESSION TEST IDENTIFICATION");
+            System.out.println("------------------------------------------------------------");
+            System.out.println("No affected methods available; coverage mapping and regression selection are skipped.");
+            return;
+        }
+
+        System.out.println();
+        System.out.println("------------------------------------------------------------");
+        System.out.println("COMPONENTS 8-10 - REGRESSION TEST IDENTIFICATION");
+        System.out.println("------------------------------------------------------------");
+        try {
+            JacocoMethodTestMapper mapper = new JacocoMethodTestMapper();
+            JacocoMethodTestMapper.CoverageResult coverage = mapper.map(project, result);
+            if (!coverage.failures().isEmpty()) {
+                for (String failure : coverage.failures()) {
+                    System.out.println("Test identification note: " + failure);
+                }
+            }
+            int methodsWithTests = (int) coverage.groupedSelectedTests().stream()
+                    .filter(group -> !group.selectedTests().isEmpty()).count();
+            int methodsWithoutTests = (int) coverage.groupedSelectedTests().stream()
+                    .filter(group -> group.selectionStatus().equals("NONE FOUND")).count();
+            int methodsNotAnalyzed = (int) coverage.groupedSelectedTests().stream()
+                    .filter(group -> group.selectionStatus().equals("NOT ANALYZED")).count();
+            System.out.println("Total affected application methods: " + result.allAffectedMethods().size());
+            System.out.println("Affected methods with covering tests: " + methodsWithTests);
+            System.out.println("Affected methods with no covering tests: " + methodsWithoutTests);
+            if (methodsNotAnalyzed > 0) {
+                System.out.println("Affected methods not analyzed: " + methodsNotAnalyzed);
+            }
+            System.out.println("Unique selected regression tests: " + coverage.selectedTests().size());
+            System.out.println();
+            System.out.println("GROUPED AFFECTED METHOD -> TEST CASES");
+            for (DependencyGraphResult.AffectedMethodTestGroup group : coverage.groupedSelectedTests()) {
+                System.out.printf("%s [%s]%n",
+                        displayMethod(result, group.affectedMethod()),
+                        group.impactType());
+                System.out.println("Affected Test Cases:");
+                if (group.selectedTests().isEmpty()) {
+                    System.out.println(group.selectionStatus().equals("NOT ANALYZED")
+                            ? "- NOT ANALYZED: " + group.selectionNote()
+                            : "- NONE FOUND");
+                } else {
+                    for (String test : group.selectedTests()) {
+                        System.out.println("- " + test);
+                    }
+                }
+            }
+            DependencyGraphResult enriched = new DependencyGraphResult(
+                    result.graph(),
+                    result.affectedNodes(),
+                    result.impactPaths(),
+                    result.directlyImpactedMethods(),
+                    result.indirectlyAffectedMethods(),
+                    result.allAffectedMethods(),
+                    coverage.methodTestCoverage(),
+                    coverage.selectedTests(),
+                    coverage.groupedSelectedTests(),
+                    List.of());
+            Path coverageOutput = project.toAbsolutePath().normalize().resolve("target/smartdeptest-coverage-selection.json");
+            new DependencyGraphJsonExporter().write(enriched, coverageOutput);
+            System.out.println("Coverage JSON: " + coverageOutput);
+        } catch (IOException exception) {
+            String message = exception.getMessage();
+            System.out.println("Regression test identification unavailable: "
+                    + exception.getClass().getSimpleName()
+                    + (message == null || message.isBlank() ? " (no detail message)" : ": " + message));
         }
     }
 
