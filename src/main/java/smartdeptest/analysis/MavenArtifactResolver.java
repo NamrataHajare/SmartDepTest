@@ -23,11 +23,12 @@ class MavenArtifactResolver {
         String run(Path workingDirectory, List<String> arguments) throws IOException;
     }
 
-    record ResolvedArtifact(Path jar, String source) {}
+    record ResolvedArtifact(Path jar, String source) {
+    }
 
     private static final Pattern TRANSFER_SOURCE = Pattern.compile(
             "(?m)^.*(?:Downloaded|Downloading) from ([^\\s:]+): (\\S+).*$");
-        private static final List<String> CACHED_MISS_MARKERS = List.of(
+    private static final List<String> CACHED_MISS_MARKERS = List.of(
             "failure was cached", "cached in the local repository", "previous attempt",
             "will not be reattempted", "not reattempted until");
     private final MavenInvoker mavenInvoker;
@@ -43,7 +44,7 @@ class MavenArtifactResolver {
     }
 
     ResolvedArtifact resolveJar(Path projectDirectory, String pomPath, String groupId,
-                                String artifactId, String version, String classifier) throws IOException {
+            String artifactId, String version, String classifier) throws IOException {
         String effectiveClassifier = classifier == null ? "" : classifier;
         String coordinate = groupId + ":" + artifactId + ":" + version + ":jar"
                 + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
@@ -55,7 +56,8 @@ class MavenArtifactResolver {
 
         String cacheKey = projectPom + "|" + coordinate;
         ResolvedArtifact cached = resolved.get(cacheKey);
-        if (cached != null && Files.isRegularFile(cached.jar())) return cached;
+        if (cached != null && Files.isRegularFile(cached.jar()))
+            return cached;
         if (!validCoordinatePart(groupId) || !validCoordinatePart(artifactId) || !validCoordinatePart(version)
                 || (!effectiveClassifier.isBlank() && !validCoordinatePart(effectiveClassifier))) {
             throw new IOException("Dependency coordinates are incomplete or contain an unresolved Maven property: "
@@ -68,11 +70,14 @@ class MavenArtifactResolver {
                 + (effectiveClassifier.isBlank() ? "" : "-" + effectiveClassifier) + ".jar");
         jar.toFile().deleteOnExit();
         try {
-                String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
+            String artifactCoordinate = groupId + ":" + artifactId + ":" + version + ":jar"
                     + (effectiveClassifier.isBlank() ? "" : ":" + effectiveClassifier);
-                String output = runWithCachedMissRetry(mavenInvoker, projectRoot, List.of("mvn", "-f", projectPom.toString(),
-                    "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
-                    "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
+            String output = runWithCachedMissRetry(mavenInvoker, projectRoot,
+                    List.of("mvn", "-f", projectPom.toString(),
+                            "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
+                            "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
+            System.out.println("Resolved artifact: " + coordinate);
+            System.out.println("Copied JAR path: " + jar);
             if (!Files.isRegularFile(jar)) {
                 throw new IOException("Maven completed without producing the requested JAR at " + jar
                         + ". Maven output: " + output);
@@ -88,8 +93,8 @@ class MavenArtifactResolver {
     }
 
     List<Path> resolveApiClasspath(Path projectDirectory, String pomPath, String groupId,
-                                   String artifactId, String version, String classifier,
-                                   ResolvedArtifact dependencyArtifact) throws IOException {
+            String artifactId, String version, String classifier,
+            ResolvedArtifact dependencyArtifact) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
         Path projectPom = projectRoot.resolve(pomPath).normalize();
         String effectiveClassifier = classifier == null ? "" : classifier;
@@ -118,7 +123,8 @@ class MavenArtifactResolver {
                     if (!value.isBlank()) {
                         for (String entry : value.split(Pattern.quote(java.io.File.pathSeparator))) {
                             Path path = Path.of(entry);
-                            if (Files.exists(path)) classpath.add(path.toAbsolutePath().normalize());
+                            if (Files.exists(path))
+                                classpath.add(path.toAbsolutePath().normalize());
                         }
                     }
                 }
@@ -143,7 +149,7 @@ class MavenArtifactResolver {
     }
 
     private static ClasspathPom createClasspathPom(Path projectPom, String groupId, String artifactId,
-                                                   String version, String classifier) throws IOException {
+            String version, String classifier) throws IOException {
         Path parentPom = null;
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -156,13 +162,15 @@ class MavenArtifactResolver {
             String parentArtifactId = childText(project, "artifactId");
             String parentVersion = childText(project, "version");
             Element parent = child(project, "parent");
-            if (parentGroupId.isBlank() && parent != null) parentGroupId = childText(parent, "groupId");
-            if (parentVersion.isBlank() && parent != null) parentVersion = childText(parent, "version");
+            if (parentGroupId.isBlank() && parent != null)
+                parentGroupId = childText(parent, "groupId");
+            if (parentVersion.isBlank() && parent != null)
+                parentVersion = childText(parent, "version");
             Map<String, String> properties = new HashMap<>();
             Element propertyElement = child(project, "properties");
             if (propertyElement != null) {
-                for (Node property = propertyElement.getFirstChild(); property != null;
-                     property = property.getNextSibling()) {
+                for (Node property = propertyElement.getFirstChild(); property != null; property = property
+                        .getNextSibling()) {
                     if (property instanceof Element element) {
                         properties.put(localName(element), element.getTextContent().trim());
                     }
@@ -214,19 +222,23 @@ class MavenArtifactResolver {
             Files.writeString(wrapperPom, wrapper);
             return new ClasspathPom(wrapperPom, parentPom);
         } catch (IOException exception) {
-            if (parentPom != null) Files.deleteIfExists(parentPom);
+            if (parentPom != null)
+                Files.deleteIfExists(parentPom);
             throw exception;
         } catch (Exception exception) {
-            if (parentPom != null) Files.deleteIfExists(parentPom);
+            if (parentPom != null)
+                Files.deleteIfExists(parentPom);
             throw new IOException("Could not create a temporary API classpath POM for " + projectPom + ".", exception);
         }
     }
 
-    private record ClasspathPom(Path wrapper, Path parent) {}
+    private record ClasspathPom(Path wrapper, Path parent) {
+    }
 
     private static Element child(Element parent, String name) {
         for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
-            if (node instanceof Element element && localName(element).equals(name)) return element;
+            if (node instanceof Element element && localName(element).equals(name))
+                return element;
         }
         return null;
     }
@@ -255,7 +267,8 @@ class MavenArtifactResolver {
             }
             matcher.appendTail(result);
             resolved = result.toString();
-            if (!replaced) break;
+            if (!replaced)
+                break;
         }
         return resolved;
     }
@@ -266,7 +279,7 @@ class MavenArtifactResolver {
     }
 
     static String runWithCachedMissRetry(MavenInvoker mavenInvoker, Path workingDirectory,
-                                         List<String> arguments) throws IOException {
+            List<String> arguments) throws IOException {
         try {
             return mavenInvoker.run(workingDirectory, arguments);
         } catch (IOException firstFailure) {

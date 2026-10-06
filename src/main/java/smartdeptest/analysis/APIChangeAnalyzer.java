@@ -28,11 +28,12 @@ public final class APIChangeAnalyzer {
         for (DependencyChange change : dependencyChanges.getChanges()) {
             String key = change.getGroupId() + ":" + change.getArtifactId() + ":"
                     + change.getOldVersion() + ":" + change.getNewVersion() + ":"
-                + change.getOldClassifier() + ":" + change.getNewClassifier() + ":"
-                + change.getOldType() + ":" + change.getNewType() + ":" + change.getPomPath();
-            uniqueChanges.merge(key, change, (existing, candidate) ->
-                existing.isDependencyManagement() && !candidate.isDependencyManagement()
-                    ? candidate : existing);
+                    + change.getOldClassifier() + ":" + change.getNewClassifier() + ":"
+                    + change.getOldType() + ":" + change.getNewType() + ":" + change.getPomPath();
+            uniqueChanges.merge(key, change,
+                    (existing, candidate) -> existing.isDependencyManagement() && !candidate.isDependencyManagement()
+                            ? candidate
+                            : existing);
         }
 
         List<DependencyApiResult> results = new ArrayList<>();
@@ -48,55 +49,52 @@ public final class APIChangeAnalyzer {
         String oldVersion = change.getOldVersion();
         String newVersion = change.getNewVersion();
         if ((!change.getOldType().isBlank() && !"jar".equals(change.getOldType()))
-            || (!change.getNewType().isBlank() && !"jar".equals(change.getNewType()))) {
-                return unavailable(change, null, null,
-                "API analysis currently supports JAR dependencies, not Maven type "
-                    + change.getNewType() + ".");
+                || (!change.getNewType().isBlank() && !"jar".equals(change.getNewType()))) {
+            return unavailable(change, null, null,
+                    "API analysis currently supports JAR dependencies, not Maven type "
+                            + change.getNewType() + ".");
         }
         if (oldVersion.isBlank() || newVersion.isBlank() || oldVersion.equals("NOT_SPECIFIED")
                 || newVersion.equals("NOT_SPECIFIED")) {
-                return unavailable(change, null, null,
+            return unavailable(change, null, null,
                     "Both old and new dependency versions are required for API comparison.");
         }
         if (oldVersion.equals(newVersion)) {
-                return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
+            return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
                     change.getOldClassifier(), change.getNewClassifier(), change.getOldScope(), change.getNewScope(),
                     change.getOldType(), change.getNewType(), change.isDependencyManagement(),
                     change.getPomPath(), "", "", "", "",
-                DependencyApiResult.Status.ANALYZED,
-                "Dependency version did not change; JAR comparison was skipped.", List.of());
+                    DependencyApiResult.Status.ANALYZED,
+                    "Dependency version did not change; JAR comparison was skipped.", List.of());
         }
 
-            MavenArtifactResolver.ResolvedArtifact oldArtifact = null;
-            MavenArtifactResolver.ResolvedArtifact newArtifact = null;
+        MavenArtifactResolver.ResolvedArtifact oldArtifact = null;
+        MavenArtifactResolver.ResolvedArtifact newArtifact = null;
         try {
-                oldArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
+            oldArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
                     artifactId, oldVersion, change.getOldClassifier());
-                newArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
+            newArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
                     artifactId, newVersion, change.getNewClassifier());
-                    List<Path> oldClasspath = artifactResolver.resolveApiClasspath(projectDirectory, change.getPomPath(),
-                        groupId, artifactId, oldVersion, change.getOldClassifier(), oldArtifact);
-                    List<Path> newClasspath = artifactResolver.resolveApiClasspath(projectDirectory, change.getPomPath(),
-                        groupId, artifactId, newVersion, change.getNewClassifier(), newArtifact);
-                    Path newArtifactSuffix = MavenArtifactResolver.artifactPathSuffix(groupId, artifactId,
-                        newVersion, change.getNewClassifier());
-                    Path oldArtifactSuffix = MavenArtifactResolver.artifactPathSuffix(groupId, artifactId,
-                        oldVersion, change.getOldClassifier());
-                    oldClasspath = oldClasspath.stream().filter(path -> !path.toAbsolutePath().normalize()
-                        .endsWith(newArtifactSuffix)).toList();
-                    newClasspath = newClasspath.stream().filter(path -> !path.toAbsolutePath().normalize()
-                        .endsWith(oldArtifactSuffix)).toList();
             long comparisonStarted = System.nanoTime();
             List<ApiChange> changes;
             String comparisonMessage = "";
             try {
                 changes = apiComparator.compare(oldArtifact.jar(), newArtifact.jar(),
-                        oldClasspath, newClasspath, false);
+                        List.of(), List.of(), false);
             } catch (RuntimeException strictFailure) {
                 String detail = strictFailure.getMessage();
-                if (detail == null || !detail.contains("Class not found:")) throw strictFailure;
+
+                if (detail == null
+                        || (!detail.contains("Class not found:")
+                                && !detail.contains("Could not load")
+                                && !detail.contains(
+                                        "Please make sure that all libraries have been added to the classpath"))) {
+                    throw strictFailure;
+                }
+
                 changes = apiComparator.compare(oldArtifact.jar(), newArtifact.jar(),
-                        oldClasspath, newClasspath, true);
+                        List.of(), List.of(), true);
+
                 comparisonMessage = "JApiCmp ignored unresolved transitive class references: " + detail;
             }
             System.out.printf("JApiCmp analysis for %s:%s completed in %d ms.%n", groupId, artifactId,
@@ -108,19 +106,20 @@ public final class APIChangeAnalyzer {
                     oldArtifact.source(), newArtifact.source(),
                     DependencyApiResult.Status.ANALYZED, comparisonMessage, changes);
         } catch (IOException | RuntimeException exception) {
-            String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-                return unavailable(change, oldArtifact, newArtifact, message);
+            String message = exception.getMessage() == null ? exception.getClass().getSimpleName()
+                    : exception.getMessage();
+            return unavailable(change, oldArtifact, newArtifact, message);
         }
     }
 
     private static DependencyApiResult unavailable(DependencyChange change,
-                                                   MavenArtifactResolver.ResolvedArtifact oldArtifact,
-                                                   MavenArtifactResolver.ResolvedArtifact newArtifact,
-                                                   String message) {
+            MavenArtifactResolver.ResolvedArtifact oldArtifact,
+            MavenArtifactResolver.ResolvedArtifact newArtifact,
+            String message) {
         return new DependencyApiResult(change.getGroupId(), change.getArtifactId(),
                 change.getOldVersion(), change.getNewVersion(), change.getOldClassifier(), change.getNewClassifier(),
-            change.getOldScope(), change.getNewScope(), change.getOldType(), change.getNewType(),
-            change.isDependencyManagement(),
+                change.getOldScope(), change.getNewScope(), change.getOldType(), change.getNewType(),
+                change.isDependencyManagement(),
                 change.getPomPath(),
                 oldArtifact == null ? "" : oldArtifact.jar().toString(),
                 newArtifact == null ? "" : newArtifact.jar().toString(),

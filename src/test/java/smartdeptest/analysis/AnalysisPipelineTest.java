@@ -542,8 +542,8 @@ class AnalysisPipelineTest {
                         @Override
                         List<Path> resolveApiClasspath(Path projectDirectory, String pomPath, String groupId,
                                                                                    String artifactId, String version, String classifier,
-                                                                                   ResolvedArtifact dependencyArtifact) {
-                                return List.of(dependencyArtifact.jar());
+                                                                                   ResolvedArtifact dependencyArtifact) throws IOException {
+                                throw new IOException("API comparison must not resolve the target project's dependency classpath.");
                         }
                 };
 
