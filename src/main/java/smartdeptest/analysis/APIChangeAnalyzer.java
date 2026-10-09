@@ -41,10 +41,10 @@ public final class APIChangeAnalyzer {
                     + change.getPomPath();
 
             uniqueChanges.merge(key, change,
-                    (existing, candidate) ->
-                            existing.isDependencyManagement()
-                                    && !candidate.isDependencyManagement()
-                                    ? candidate : existing);
+                    (existing, candidate) -> existing.isDependencyManagement()
+                            && !candidate.isDependencyManagement()
+                                    ? candidate
+                                    : existing);
         }
 
         List<DependencyApiResult> results = new ArrayList<>();
@@ -74,7 +74,7 @@ public final class APIChangeAnalyzer {
         if ((!change.getOldType().isBlank()
                 && !"jar".equals(change.getOldType()))
                 || (!change.getNewType().isBlank()
-                && !"jar".equals(change.getNewType()))) {
+                        && !"jar".equals(change.getNewType()))) {
             return unavailable(change, null, null,
                     "API analysis currently supports JAR dependencies only.");
         }
@@ -127,9 +127,11 @@ public final class APIChangeAnalyzer {
             emptyJar = createEmptyJar();
 
             Path oldJar = oldArtifact == null
-                    ? emptyJar : oldArtifact.jar();
+                    ? emptyJar
+                    : oldArtifact.jar();
             Path newJar = newArtifact == null
-                    ? emptyJar : newArtifact.jar();
+                    ? emptyJar
+                    : newArtifact.jar();
 
             long started = System.nanoTime();
 
@@ -149,9 +151,21 @@ public final class APIChangeAnalyzer {
                 changes = apiComparator.compare(
                         oldJar, newJar, List.of(), List.of(), true);
 
-                comparisonMessage =
-                        "JApiCmp ignored unresolved transitive class references: "
-                                + detail;
+                comparisonMessage = "JApiCmp ignored unresolved transitive class references: "
+                        + detail;
+            }
+            System.out.println("\n[DEBUG] Actual API changes:");
+
+            for (ApiChange change1 : changes) {
+                System.out.println(
+                        "Kind: " + change1.kind()
+                                + " | Class: " + change1.className()
+                                + " | Member: " + change1.memberName()
+                                + " | Old signature: " + change1.oldSignature()
+                                + " | New signature: " + change1.newSignature()
+                                + " | Old descriptor: " + change1.oldDescriptor()
+                                + " | New descriptor: " + change1.newDescriptor()
+                                + " | Potentially incompatible: " + change1.potentiallyIncompatible());
             }
 
             if (!hasOldVersion) {
@@ -223,9 +237,9 @@ public final class APIChangeAnalyzer {
     private static boolean isMissingClasspathFailure(String detail) {
         return detail != null
                 && (detail.contains("Class not found:")
-                || detail.contains("Could not load")
-                || detail.contains(
-                        "Please make sure that all libraries have been added to the classpath"));
+                        || detail.contains("Could not load")
+                        || detail.contains(
+                                "Please make sure that all libraries have been added to the classpath"));
     }
 
     private static String normalizeVersion(String version) {
@@ -239,7 +253,8 @@ public final class APIChangeAnalyzer {
 
     private static String appendMessage(String existing, String additional) {
         return existing == null || existing.isBlank()
-                ? additional : existing + " " + additional;
+                ? additional
+                : existing + " " + additional;
     }
 
     private static String messageOf(Throwable exception) {

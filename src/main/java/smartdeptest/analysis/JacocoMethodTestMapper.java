@@ -35,6 +35,9 @@ public final class JacocoMethodTestMapper {
     private static final String TEST_SELECTION_UNAVAILABLE =
             "JaCoCo XML reports contain aggregate method coverage, not test-method attribution. "
                     + "No regression test is selected without per-test coverage evidence.";
+    private static final String STATIC_SELECTION_NOTE =
+            "Selection uses statically traceable test-bytecode call paths, not runtime coverage. "
+                    + "JaCoCo execution data is not used.";
 
     public CoverageResult map(
             Path projectDirectory,
@@ -102,6 +105,8 @@ public final class JacocoMethodTestMapper {
         }
 
         List<String> failures = new ArrayList<>();
+        String evidenceNote = STATIC_SELECTION_NOTE + " "
+                + describeJaCoCoArtifacts(modules);
 
         List<Path> affectedModules = identifyAffectedApplicationModules(
                 root, modules, affectedMethods, applicationGraph);
@@ -130,7 +135,8 @@ public final class JacocoMethodTestMapper {
                         indirectlyAffectedMethods,
                         testsByAffectedMethod,
                         true,
-                        failures);
+                        failures,
+                        evidenceNote);
             }
 
             String reason =
@@ -151,20 +157,56 @@ public final class JacocoMethodTestMapper {
                     "");
         }
 
-        boolean testBytecodeReady = ensureTestBytecodeCurrent(
-                root, affectedModules, failures);
+        List<Path> testModules = new ArrayList<>();
+        Map<Path, List<Path>> testOutputDirectories = new LinkedHashMap<>();
+        for (Path module : modules) {
+            if (hasTestSourcesOrClasses(module)) {
+                testModules.add(module);
+                testOutputDirectories.put(module, testOutputDirectories(module));
+            }
+        }
 
-        Map<MethodKey, Set<MethodKey>> testCalls = new LinkedHashMap<>();
-        Set<MethodKey> testEntryPoints = new LinkedHashSet<>();
+        boolean testBytecodeReady = ensureTestBytecodeCurrent(
+                root, testModules, testOutputDirectories, failures);
+
+        Map<Path, Map<MethodKey, Set<MethodKey>>> testCallsByModule =
+                new LinkedHashMap<>();
+        Set<TestEntryPoint> testEntryPoints = new LinkedHashSet<>();
 
         if (testBytecodeReady) {
-            for (Path moduleRoot : affectedModules) {
-                Path testClasses = moduleRoot.resolve("target/test-classes");
-
-                if (Files.isDirectory(testClasses)) {
-                    readTestBytecode(testClasses, testCalls, testEntryPoints);
+            for (Path moduleRoot : testModules) {
+                Map<MethodKey, Set<MethodKey>> moduleCalls =
+                        new LinkedHashMap<>();
+                Set<TestEntryPoint> moduleEntryPoints = new LinkedHashSet<>();
+                List<Path> existingOutputs = testOutputDirectories.get(moduleRoot)
+                        .stream().filter(Files::isDirectory).toList();
+                if (!existingOutputs.isEmpty()) {
+                    readTestBytecode(
+                            existingOutputs,
+                            moduleRoot,
+                            moduleCalls,
+                            moduleEntryPoints);
+                    testCallsByModule.put(moduleRoot, moduleCalls);
+                    testEntryPoints.addAll(moduleEntryPoints);
                 }
             }
+        }
+
+        if (testBytecodeReady && testEntryPoints.isEmpty()) {
+            String reason = "No supported test entry points were found in compiled test bytecode. "
+                    + evidenceNote;
+            failures.add(reason);
+            return new CoverageResult(
+                    List.of(),
+                    List.of(),
+                    buildUnavailableGroups(
+                            affectedMethods,
+                            directlyImpactedMethods,
+                            indirectlyAffectedMethods,
+                            reason),
+                    failures,
+                    List.of(),
+                    reason);
         }
 
         Map<MethodKey, String> applicationMethods =
@@ -172,16 +214,30 @@ public final class JacocoMethodTestMapper {
         Map<String, Set<String>> callsByApplicationMethod =
                 applicationCalls(applicationGraph);
         Set<String> affectedSet = new LinkedHashSet<>(affectedMethods);
+        Map<String, Set<Path>> modulesByTestClass = new LinkedHashMap<>();
+        for (TestEntryPoint entryPoint : testEntryPoints) {
+            modulesByTestClass.computeIfAbsent(
+                    entryPoint.testClass(), ignored -> new LinkedHashSet<>())
+                    .add(entryPoint.moduleRoot());
+        }
 
-        for (MethodKey entryPoint : testEntryPoints) {
-            String testId = entryPoint.owner().replace('/', '.')
-                    + "#" + entryPoint.name();
+        for (TestEntryPoint entryPoint : testEntryPoints) {
+            String testClass = entryPoint.testClass().replace('/', '.');
+            if (modulesByTestClass.getOrDefault(
+                    entryPoint.testClass(), Set.of()).size() > 1) {
+                String moduleName = root.relativize(entryPoint.moduleRoot())
+                        .toString().replace('\\', '/');
+                testClass = moduleName + "::" + testClass;
+            }
+            String testId = testClass
+                    + "#" + entryPoint.method().name();
 
             Set<String> reachedApplicationMethods = new LinkedHashSet<>();
 
             traceTestMethod(
-                    entryPoint,
-                    testCalls,
+                    entryPoint.method(),
+                    testCallsByModule.getOrDefault(
+                            entryPoint.moduleRoot(), Map.of()),
                     applicationMethods,
                     callsByApplicationMethod,
                     new HashSet<>(),
@@ -203,7 +259,8 @@ public final class JacocoMethodTestMapper {
                 indirectlyAffectedMethods,
                 testsByAffectedMethod,
                 testBytecodeReady,
-                failures);
+                failures,
+                evidenceNote);
     }
 
     private static CoverageResult buildCoverageResult(
@@ -212,7 +269,8 @@ public final class JacocoMethodTestMapper {
             List<String> indirectlyAffectedMethods,
             Map<String, Set<String>> testsByAffectedMethod,
             boolean testBytecodeReady,
-            List<String> failures) {
+            List<String> failures,
+            String selectionNote) {
 
         List<DependencyGraphResult.MethodTestCoverage> mappings =
                 new ArrayList<>();
@@ -243,7 +301,11 @@ public final class JacocoMethodTestMapper {
                     : tests.isEmpty() ? "NONE FOUND" : "SELECTED";
 
             String note = testBytecodeReady
-                    ? ""
+                    ? tests.isEmpty()
+                            ? "No statically traceable test call path was found. "
+                                    + "This does not prove runtime non-coverage. "
+                                    + selectionNote
+                            : selectionNote
                     : "Test bytecode compilation failed; "
                             + "coverage attribution was not inferred.";
 
@@ -264,7 +326,7 @@ public final class JacocoMethodTestMapper {
                 groups,
                 failures,
                 List.of(),
-                "");
+                selectionNote);
     }
 
     private static List<Path> identifyAffectedApplicationModules(
@@ -382,36 +444,47 @@ public final class JacocoMethodTestMapper {
 
     private static boolean ensureTestBytecodeCurrent(
             Path root,
-            List<Path> affectedModules,
+            List<Path> testModules,
+            Map<Path, List<Path>> testOutputDirectories,
             List<String> failures) throws IOException {
 
         List<Path> modulesNeedingCompilation = new ArrayList<>();
 
-        for (Path module : affectedModules) {
+        for (Path module : testModules) {
             Path sourceDirectory = module.resolve("src/test");
             if (!Files.isDirectory(sourceDirectory)
                     || !hasJavaTestSources(sourceDirectory)) {
                 continue;
             }
 
-            Path testClasses = module.resolve("target/test-classes");
-            boolean needsCompilation = !Files.isDirectory(testClasses);
+            List<Path> outputDirectories = testOutputDirectories.get(module);
+            boolean needsCompilation = outputDirectories.stream()
+                    .noneMatch(Files::isDirectory);
 
             if (!needsCompilation) {
-                try (var classes = Files.walk(testClasses)) {
-                    Path newestClass = classes
-                            .filter(Files::isRegularFile)
-                            .filter(path -> path.getFileName().toString().endsWith(".class"))
-                            .max(JacocoMethodTestMapper::compareModifiedTime)
-                            .orElse(null);
-
-                    needsCompilation = newestClass == null
-                            || hasSourceNewerThan(sourceDirectory, newestClass);
-                } catch (IOException exception) {
-                    failures.add("Unable to inspect test compilation freshness in "
-                            + module + ": " + exception.getMessage());
-                    return false;
+                Path newestClass = null;
+                for (Path outputDirectory : outputDirectories) {
+                    if (!Files.isDirectory(outputDirectory)) {
+                        continue;
+                    }
+                    try (var classes = Files.walk(outputDirectory)) {
+                        Path candidate = classes
+                                .filter(Files::isRegularFile)
+                                .filter(path -> path.getFileName().toString().endsWith(".class"))
+                                .max(JacocoMethodTestMapper::compareModifiedTime)
+                                .orElse(null);
+                        if (candidate != null && (newestClass == null
+                                || compareModifiedTime(candidate, newestClass) > 0)) {
+                            newestClass = candidate;
+                        }
+                    } catch (IOException exception) {
+                        failures.add("Unable to inspect test compilation freshness in "
+                                + module + ": " + exception.getMessage());
+                        return false;
+                    }
                 }
+                needsCompilation = newestClass == null
+                        || hasSourceNewerThan(sourceDirectory, newestClass);
             }
 
             if (needsCompilation) {
@@ -501,6 +574,111 @@ public final class JacocoMethodTestMapper {
                     Files.isRegularFile(path)
                             && path.getFileName().toString().endsWith(".java"));
         }
+    }
+
+    private static boolean hasTestSourcesOrClasses(Path module)
+            throws IOException {
+        Path sourceDirectory = module.resolve("src/test");
+        if (Files.isDirectory(sourceDirectory)
+                && hasJavaTestSources(sourceDirectory)) {
+            return true;
+        }
+        return testOutputDirectories(module).stream().anyMatch(Files::isDirectory);
+    }
+
+    private static List<Path> testOutputDirectories(Path module)
+            throws IOException {
+        Path pom = module.resolve("pom.xml");
+        if (!Files.isRegularFile(pom)) {
+            return List.of(module.resolve("target/test-classes"));
+        }
+
+        Element project = readXml(pom).getDocumentElement();
+        Element build = directChild(project, "build");
+        String configuredBuildDirectory = build == null
+                ? ""
+                : directChildText(build, "directory");
+        if (configuredBuildDirectory.isBlank()) {
+            configuredBuildDirectory = "target";
+        }
+        Path buildDirectory = resolveBuildPath(
+                configuredBuildDirectory, module, "target");
+
+        LinkedHashSet<Path> outputs = new LinkedHashSet<>();
+        String configuredTestOutput = build == null
+                ? ""
+                : directChildText(build, "testOutputDirectory");
+        outputs.add(resolveBuildPath(
+                configuredTestOutput.isBlank()
+                        ? "${project.build.directory}/test-classes"
+                        : configuredTestOutput,
+                module,
+                buildDirectory.toString()));
+
+        Element plugins = build == null ? null : directChild(build, "plugins");
+        if (plugins != null) {
+            for (Element plugin : descendants(plugins, "plugin")) {
+                if (!"maven-compiler-plugin".equals(
+                        directChildText(plugin, "artifactId"))) {
+                    continue;
+                }
+                addTestCompilerOutput(
+                        outputs, directChild(plugin, "configuration"),
+                        module, buildDirectory.toString(), false);
+                Element executions = directChild(plugin, "executions");
+                if (executions == null) {
+                    continue;
+                }
+                for (Element execution : descendants(executions, "execution")) {
+                    Element goals = directChild(execution, "goals");
+                    boolean compilesTests = goals != null
+                            && descendants(goals, "goal").stream()
+                                    .anyMatch(goal -> "testCompile".equals(
+                                            goal.getTextContent().trim()));
+                    if (compilesTests) {
+                        addTestCompilerOutput(
+                                outputs, directChild(execution, "configuration"),
+                                module, buildDirectory.toString(), true);
+                    }
+                }
+            }
+        }
+        return outputs.stream().map(Path::normalize).distinct().toList();
+    }
+
+    private static void addTestCompilerOutput(
+            Set<Path> outputs,
+            Element configuration,
+            Path module,
+            String buildDirectory,
+            boolean testCompileExecution) throws IOException {
+        if (configuration == null) {
+            return;
+        }
+        String output = directChildText(configuration, "testOutputDirectory");
+        if (output.isBlank() && testCompileExecution) {
+            output = directChildText(configuration, "outputDirectory");
+        }
+        if (!output.isBlank()) {
+            outputs.add(resolveBuildPath(output, module, buildDirectory));
+        }
+    }
+
+    private static Path resolveBuildPath(
+            String value,
+            Path module,
+            String buildDirectory) throws IOException {
+        String resolved = value
+                .replace("${project.basedir}", module.toAbsolutePath().normalize().toString())
+                .replace("${basedir}", module.toAbsolutePath().normalize().toString())
+                .replace("${project.build.directory}", buildDirectory);
+        if (resolved.contains("${")) {
+            throw new IOException("Unresolved Maven test output directory expression in "
+                    + module.resolve("pom.xml") + ": " + value);
+        }
+        Path output = Path.of(resolved);
+        return (output.isAbsolute() ? output : module.resolve(output))
+                .toAbsolutePath().normalize();
     }
 
     private static boolean hasSourceNewerThan(
@@ -917,20 +1095,27 @@ public final class JacocoMethodTestMapper {
     }
 
     private static void readTestBytecode(
-            Path testClasses,
+            List<Path> testClassesDirectories,
+            Path moduleRoot,
             Map<MethodKey, Set<MethodKey>> calls,
-            Set<MethodKey> testEntryPoints) throws IOException {
+            Set<TestEntryPoint> testEntryPoints) throws IOException {
+        Map<String, TestClassInfo> testClassesByName = new LinkedHashMap<>();
 
-        try (var files = Files.walk(testClasses)) {
-            for (Path classFile : files
-                    .filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().endsWith(".class"))
-                    .toList()) {
+        for (Path testClasses : testClassesDirectories) {
+            try (var files = Files.walk(testClasses)) {
+                for (Path classFile : files
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".class"))
+                        .toList()) {
 
-                try (InputStream input = Files.newInputStream(classFile)) {
-                    new ClassReader(input).accept(
+                    try (InputStream input = Files.newInputStream(classFile)) {
+                        new ClassReader(input).accept(
                             new ClassVisitor(Opcodes.ASM9) {
                                 private String className;
+                                private String superName;
+                                private int classAccess;
+                                private final Map<MethodKey, TestMethodInfo> methods =
+                                        new LinkedHashMap<>();
 
                                 @Override
                                 public void visit(
@@ -941,6 +1126,8 @@ public final class JacocoMethodTestMapper {
                                         String superName,
                                         String[] interfaces) {
                                     className = name;
+                                    this.superName = superName;
+                                    classAccess = access;
                                 }
 
                                 @Override
@@ -955,6 +1142,8 @@ public final class JacocoMethodTestMapper {
                                             new MethodKey(className, name, descriptor);
                                     Set<MethodKey> invokedMethods = calls.computeIfAbsent(
                                             method, ignored -> new LinkedHashSet<>());
+                                    TestMethodInfo methodInfo =
+                                            new TestMethodInfo(method, access);
 
                                     return new MethodVisitor(Opcodes.ASM9) {
                                         @Override
@@ -962,7 +1151,7 @@ public final class JacocoMethodTestMapper {
                                                 String annotationDescriptor,
                                                 boolean visible) {
                                             if (isTestAnnotation(annotationDescriptor)) {
-                                                testEntryPoints.add(method);
+                                                methodInfo.annotated = true;
                                             }
                                             return null;
                                         }
@@ -979,6 +1168,15 @@ public final class JacocoMethodTestMapper {
                                         }
 
                                         @Override
+                                        public void visitEnd() {
+                                            methods.put(method, methodInfo);
+                                            if (methodInfo.annotated) {
+                                                testEntryPoints.add(new TestEntryPoint(
+                                                        method, className, moduleRoot));
+                                            }
+                                        }
+
+                                        @Override
                                         public void visitInvokeDynamicInsn(
                                                 String dynamicName,
                                                 String dynamicDescriptor,
@@ -990,11 +1188,78 @@ public final class JacocoMethodTestMapper {
                                         }
                                     };
                                 }
+
+                                @Override
+                                public void visitEnd() {
+                                    testClassesByName.put(
+                                            className,
+                                            new TestClassInfo(
+                                                    className,
+                                                    superName,
+                                                    classAccess,
+                                                    methods));
+                                }
                             },
-                            ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+                                ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+                    }
                 }
             }
         }
+
+        for (TestClassInfo testClass : testClassesByName.values()) {
+            if ((testClass.access() & Opcodes.ACC_ABSTRACT) != 0
+                    || !extendsJUnit3TestCase(testClass, testClassesByName)) {
+                continue;
+            }
+
+            Map<String, TestMethodInfo> inheritedTests = new LinkedHashMap<>();
+            String currentClass = testClass.internalName();
+            Set<String> visited = new HashSet<>();
+            while (currentClass != null && visited.add(currentClass)) {
+                TestClassInfo current = testClassesByName.get(currentClass);
+                if (current == null) {
+                    break;
+                }
+                for (TestMethodInfo method : current.methods().values()) {
+                    if (isJUnit3TestMethod(method)) {
+                        inheritedTests.putIfAbsent(
+                                method.method().name() + method.method().descriptor(),
+                                method);
+                    }
+                }
+                currentClass = current.superName();
+            }
+
+            for (TestMethodInfo test : inheritedTests.values()) {
+                testEntryPoints.add(new TestEntryPoint(
+                        test.method(), testClass.internalName(), moduleRoot));
+            }
+        }
+    }
+
+    private static boolean extendsJUnit3TestCase(
+            TestClassInfo testClass,
+            Map<String, TestClassInfo> testClassesByName) {
+        String current = testClass.superName();
+        Set<String> visited = new HashSet<>();
+        while (current != null && visited.add(current)) {
+            if ("junit/framework/TestCase".equals(current)) {
+                return true;
+            }
+            TestClassInfo parent = testClassesByName.get(current);
+            if (parent == null) {
+                return false;
+            }
+            current = parent.superName();
+        }
+        return false;
+    }
+
+    private static boolean isJUnit3TestMethod(TestMethodInfo method) {
+        return method.method().name().startsWith("test")
+                && "()V".equals(method.method().descriptor())
+                && (method.access() & Opcodes.ACC_PUBLIC) != 0
+                && (method.access() & Opcodes.ACC_STATIC) == 0;
     }
 
     private static void collectMethodHandles(
@@ -1036,6 +1301,7 @@ public final class JacocoMethodTestMapper {
 
     private static Map<MethodKey, String> applicationMethods(DependencyGraph graph) {
         Map<MethodKey, String> methods = new LinkedHashMap<>();
+        Set<MethodKey> ambiguousMethods = new HashSet<>();
         if (graph == null) {
             return methods;
         }
@@ -1052,9 +1318,14 @@ public final class JacocoMethodTestMapper {
             if (className instanceof String owner
                     && methodName instanceof String name
                     && descriptor instanceof String methodDescriptor) {
-                methods.put(
-                        new MethodKey(owner.replace('.', '/'), name, methodDescriptor),
-                        node.id());
+                MethodKey key = new MethodKey(
+                        owner.replace('.', '/'), name, methodDescriptor);
+                if (methods.containsKey(key)) {
+                    methods.remove(key);
+                    ambiguousMethods.add(key);
+                } else if (!ambiguousMethods.contains(key)) {
+                    methods.put(key, node.id());
+                }
             }
         }
 
@@ -1129,6 +1400,36 @@ public final class JacocoMethodTestMapper {
     }
 
     private record MethodKey(String owner, String name, String descriptor) {
+    }
+
+    private record TestEntryPoint(
+            MethodKey method, String testClass, Path moduleRoot) {
+    }
+
+    private record TestClassInfo(
+            String internalName,
+            String superName,
+            int access,
+            Map<MethodKey, TestMethodInfo> methods) {
+    }
+
+    private static final class TestMethodInfo {
+        private final MethodKey method;
+        private final int access;
+        private boolean annotated;
+
+        private TestMethodInfo(MethodKey method, int access) {
+            this.method = method;
+            this.access = access;
+        }
+
+        private MethodKey method() {
+            return method;
+        }
+
+        private int access() {
+            return access;
+        }
     }
 
     private static List<Path> discoverModules(Path root) throws IOException {
@@ -1236,6 +1537,89 @@ public final class JacocoMethodTestMapper {
                     })
                     .toList();
         }
+    }
+
+    private static String describeJaCoCoArtifacts(List<Path> modules)
+            throws IOException {
+        List<Path> executionData = new ArrayList<>();
+        List<Path> reports = new ArrayList<>();
+        long newestClassTime = 0;
+
+        for (Path module : modules) {
+            Path targetDirectory = module.resolve("target");
+            if (!Files.isDirectory(targetDirectory)) {
+                continue;
+            }
+            try (var paths = Files.walk(targetDirectory)) {
+                for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                    String name = path.getFileName().toString();
+                    if (name.endsWith(".exec")) {
+                        executionData.add(path);
+                    } else if (name.startsWith("jacoco") && name.endsWith(".xml")) {
+                        reports.add(path);
+                    }
+                    if (name.endsWith(".class")) {
+                        newestClassTime = Math.max(
+                                newestClassTime,
+                                Files.getLastModifiedTime(path).toMillis());
+                    }
+                }
+            }
+        }
+
+        if (executionData.isEmpty() && reports.isEmpty()) {
+            return "JaCoCo data is missing: no .exec execution data or JaCoCo XML report "
+                    + "was found in Maven module target directories.";
+        }
+
+        List<String> states = new ArrayList<>();
+        if (!executionData.isEmpty()) {
+            boolean allEmpty = true;
+            long newestExecTime = 0;
+            for (Path data : executionData) {
+                allEmpty &= Files.size(data) == 0;
+                newestExecTime = Math.max(
+                        newestExecTime,
+                        Files.getLastModifiedTime(data).toMillis());
+            }
+            if (allEmpty) {
+                states.add("JaCoCo .exec data is empty.");
+            } else if (newestExecTime < newestClassTime) {
+                states.add("JaCoCo .exec data is stale relative to compiled classes.");
+            } else {
+                states.add("JaCoCo .exec data is present but is not consumed for test attribution.");
+            }
+        } else {
+            states.add("JaCoCo .exec execution data is missing.");
+        }
+
+        if (!reports.isEmpty()) {
+            boolean validXml = true;
+            Path malformed = null;
+            long newestReportTime = 0;
+            for (Path report : reports) {
+                try {
+                    readXml(report);
+                } catch (IOException exception) {
+                    validXml = false;
+                    malformed = report;
+                    break;
+                }
+                newestReportTime = Math.max(
+                        newestReportTime,
+                        Files.getLastModifiedTime(report).toMillis());
+            }
+            if (!validXml) {
+                states.add("JaCoCo XML parsing failed for " + malformed + ".");
+            } else if (newestReportTime < newestClassTime) {
+                states.add("JaCoCo XML report is stale relative to compiled classes.");
+            } else {
+                states.add("JaCoCo XML is aggregate method coverage and has no per-test attribution.");
+            }
+        } else {
+            states.add("JaCoCo XML report is missing.");
+        }
+        return String.join(" ", states);
     }
 
     private static List<Path> findTestReports(Path targetDirectory)

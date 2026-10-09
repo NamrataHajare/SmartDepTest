@@ -189,15 +189,25 @@ final class SmartDepTestRunner {
                     System.out.println("Test identification note: " + failure);
                 }
             }
+            if (!coverage.selectionNote().isBlank()) {
+                System.out.println("Test evidence diagnostic: "
+                        + coverage.selectionNote());
+            }
             int methodsWithTests = (int) coverage.groupedSelectedTests().stream()
                     .filter(group -> !group.selectedTests().isEmpty()).count();
             int methodsWithoutTests = (int) coverage.groupedSelectedTests().stream()
                     .filter(group -> group.selectionStatus().equals("NONE FOUND")).count();
             int methodsNotAnalyzed = (int) coverage.groupedSelectedTests().stream()
                     .filter(group -> group.selectionStatus().equals("NOT ANALYZED")).count();
+            boolean staticEvidence = coverage.selectionNote()
+                    .contains("statically traceable test-bytecode call paths");
             System.out.println("Total affected application methods: " + result.allAffectedMethods().size());
-            System.out.println("Affected methods with covering tests: " + methodsWithTests);
-            System.out.println("Affected methods with no covering tests: " + methodsWithoutTests);
+            System.out.println((staticEvidence
+                    ? "Affected methods with statically mapped tests: "
+                    : "Affected methods with covering tests: ") + methodsWithTests);
+            System.out.println((staticEvidence
+                    ? "Affected methods with no statically traceable test path: "
+                    : "Affected methods with no covering tests: ") + methodsWithoutTests);
             if (methodsNotAnalyzed > 0) {
                 System.out.println("Affected methods not analyzed: " + methodsNotAnalyzed);
             }

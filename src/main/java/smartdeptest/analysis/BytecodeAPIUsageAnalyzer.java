@@ -76,8 +76,7 @@ final class BytecodeAPIUsageAnalyzer {
             throw new IOException("No Maven application modules were discovered.");
         }
 
-        Map<ApiReference, List<ImpactReference>> allReferences =
-                buildReferenceIndex(analyzable);
+        Map<ApiReference, List<ImpactReference>> allReferences = buildReferenceIndex(analyzable);
 
         Map<ImpactReference, Set<UsageLocation>> locations = new HashMap<>();
         Set<Path> scannedClasses = new HashSet<>();
@@ -110,11 +109,10 @@ final class BytecodeAPIUsageAnalyzer {
                 continue;
             }
 
-            Map<ApiReference, List<ImpactReference>> moduleReferences =
-                    moduleDependencies.isEmpty()
-                            ? Map.of()
-                            : referencesOnModuleClasspath(
-                                    moduleDependencies, allReferences, classpath);
+            Map<ApiReference, List<ImpactReference>> moduleReferences = moduleDependencies.isEmpty()
+                    ? Map.of()
+                    : referencesOnModuleClasspath(
+                            moduleDependencies, allReferences, classpath);
 
             List<Path> classDirectories = module.classesDirectories().stream()
                     .filter(Files::isDirectory)
@@ -206,8 +204,8 @@ final class BytecodeAPIUsageAnalyzer {
 
                 switch (change.kind()) {
                     case CLASS_ADDED, CLASS_REMOVED, CLASS_MODIFIED ->
-                            addReference(index, new ApiReference(
-                                    ReferenceKind.CLASS, change.className(), "", ""), impact);
+                        addReference(index, new ApiReference(
+                                ReferenceKind.CLASS, change.className(), "", ""), impact);
 
                     case METHOD_ADDED, METHOD_REMOVED, METHOD_MODIFIED -> {
                         addDescriptors(
@@ -223,10 +221,10 @@ final class BytecodeAPIUsageAnalyzer {
                     }
 
                     case FIELD_ADDED, FIELD_REMOVED, FIELD_MODIFIED ->
-                            addDescriptors(
-                                    index, impact, ReferenceKind.FIELD, change,
-                                    change.kind() != ApiChange.Kind.FIELD_ADDED,
-                                    change.kind() != ApiChange.Kind.FIELD_REMOVED);
+                        addDescriptors(
+                                index, impact, ReferenceKind.FIELD, change,
+                                change.kind() != ApiChange.Kind.FIELD_ADDED,
+                                change.kind() != ApiChange.Kind.FIELD_REMOVED);
                 }
             }
         }
@@ -260,8 +258,7 @@ final class BytecodeAPIUsageAnalyzer {
             Map<ApiReference, List<ImpactReference>> index,
             ApiReference reference,
             ImpactReference impact) {
-        List<ImpactReference> list =
-                index.computeIfAbsent(reference, ignored -> new ArrayList<>());
+        List<ImpactReference> list = index.computeIfAbsent(reference, ignored -> new ArrayList<>());
         if (!list.contains(impact)) {
             list.add(impact);
         }
@@ -277,6 +274,11 @@ final class BytecodeAPIUsageAnalyzer {
         for (DependencyApiResult dependency : dependencies) {
             if (dependencyPresentOnClasspath(dependency, classpath)) {
                 matched.add(dependency);
+                System.out.println(
+                        "[DEBUG] Dependency found on classpath: "
+                                + dependency.groupId() + ":"
+                                + dependency.artifactId() + ":"
+                                + dependency.newVersion());
             } else {
                 /*
                  * For a removed dependency there may be no new artifact on the
@@ -291,6 +293,11 @@ final class BytecodeAPIUsageAnalyzer {
                             "Using old dependency artifact for API matching: %s%n",
                             oldArtifact);
                 }
+                System.out.println(
+                        "[DEBUG] Dependency NOT found on classpath: "
+                                + dependency.groupId() + ":"
+                                + dependency.artifactId() + ":"
+                                + dependency.newVersion());
             }
         }
 
@@ -885,7 +892,8 @@ final class BytecodeAPIUsageAnalyzer {
             for (String parent : info.parents()) {
                 record(references, locations,
                         new ApiReference(member.kind(), parent,
-                                member.name(), member.descriptor()), location);
+                                member.name(), member.descriptor()),
+                        location);
                 recordInherited(parent, member, references, locations, location, visited);
             }
         }
