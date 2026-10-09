@@ -108,6 +108,31 @@ class DependencyChangeDetectorTest {
     }
 
     @Test
+    void continuesAfterOneChangedPomCannotBeAnalyzed() throws Exception {
+        Path repository = createRepository();
+        Files.createDirectories(repository.resolve("module"));
+        writePom(repository, "1.0");
+        Files.writeString(repository.resolve("module/pom.xml"),
+                "<project><dependencies>" + dependency("module-library", "1.0")
+                        + "</dependencies></project>", StandardCharsets.UTF_8);
+        git(repository, "add", "pom.xml", "module/pom.xml");
+        git(repository, "commit", "-m", "initial");
+
+        writePom(repository, "2.0");
+        Files.writeString(repository.resolve("module/pom.xml"), "<project><dependencies>",
+                StandardCharsets.UTF_8);
+        git(repository, "add", "pom.xml", "module/pom.xml");
+        git(repository, "commit", "-m", "update and malformed module pom");
+
+        DependencyChangeResult result = new DependencyChangeDetector().detect(repository);
+
+        assertEquals(1, result.getChanges().size());
+        assertEquals(DependencyChange.Type.UPDATED, result.getChanges().get(0).getChangeType());
+        assertEquals(1, result.getDiagnostics().size());
+        assertTrue(result.getDiagnostics().get(0).contains("module/pom.xml"));
+    }
+
+    @Test
     void comparesMergeCommitWithItsFirstParent() throws Exception {
         Path repository = createRepository();
         writePom(repository, "1.0");

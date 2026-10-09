@@ -44,6 +44,12 @@ When prompted, enter the path to the Maven Git project you want to inspect. The 
 
 The run also writes `target/smartdeptest-impact-graph.json` inside the analyzed project. The JSON contains dependency, changed API, application class, and application method nodes; evidence-backed edges; direct and indirect affected method IDs; and direct impact paths. Application `CALLS` edges come from ASM invocation instructions whose target class, method, and descriptor were found in the analyzed application's compiled classes. Component 7 traverses those edges backwards from methods that directly use changed APIs; indirect callers are potentially affected, not definitely broken.
 
+## Console reporting
+
+The console separates dependency-change records, library API-diff records, application API-reference records, unique affected application methods, call-graph edges, and selected test cases. API-impact previews count deduplicated API/member-to-application-use records; they are not method counts. Directly affected methods, indirect callers, and their final union are reported as distinct method sets. Class-file totals distinguish discovered candidates, successful analyses, failures, and duplicate paths intentionally skipped; incomplete-module and diagnostic counts are reported separately.
+
+Long result lists are shown as bounded previews. The default preview limit can be changed with `-Danalysis.console.preview.limit=<limit>`. Detailed graph and regression-selection data remain in the JSON outputs. POM, module, class-file, and test-selection failures are surfaced as diagnostics; an individual unreadable historical POM does not suppress dependency changes successfully parsed from other POMs in that commit.
+
 You can pass the target path directly as well:
 
 ```powershell

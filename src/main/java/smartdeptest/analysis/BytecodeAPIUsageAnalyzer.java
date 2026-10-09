@@ -124,11 +124,10 @@ final class BytecodeAPIUsageAnalyzer {
                     .toList();
 
             if (classDirectories.isEmpty()) {
-                if (!moduleReferences.isEmpty()) {
-                        addDiagnostic("No compiled application classes for module "
-                            + module.moduleDirectory());
-                    incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
-                }
+                addDiagnostic("No compiled application classes for module "
+                        + module.moduleDirectory() + "; configured output directories: "
+                        + module.classesDirectories());
+                incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
                 continue;
             }
 
@@ -157,7 +156,7 @@ final class BytecodeAPIUsageAnalyzer {
             classDirectoryFailures += result.directoryFailures();
             duplicateClassFilesSkipped += result.skipped();
 
-            if (result.failed() > 0) {
+            if (result.failed() > 0 || result.directoryFailures() > 0) {
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
             }
         }
@@ -173,7 +172,8 @@ final class BytecodeAPIUsageAnalyzer {
             modules.size(), incompleteModules.size(), classFilesDiscovered,
             classFilesAnalyzed, classFileFailures, classDirectoryFailures,
             duplicateClassFilesSkipped);
-        return new UsageIndex(locations, callsToApplicationMethods, incompleteModules, summary);
+        return new UsageIndex(locations, callsToApplicationMethods, incompleteModules, summary,
+                List.copyOf(diagnostics));
     }
 
     private static boolean isDeclaredInModule(
@@ -445,7 +445,7 @@ final class BytecodeAPIUsageAnalyzer {
         } else if (incomplete) {
             classification = Classification.ANALYSIS_UNAVAILABLE;
             message = appendMessage(message,
-                    "Some application classes or modules could not be analyzed.");
+                    incompleteAnalysisMessage(dependency, index));
         } else {
             classification = Classification.NO_IDENTIFIED_IMPACT;
         }
@@ -465,6 +465,28 @@ final class BytecodeAPIUsageAnalyzer {
                 classification,
                 message,
                 findings);
+    }
+
+    private static String incompleteAnalysisMessage(
+            DependencyApiResult dependency, UsageIndex index) {
+        String pomPath = normalizePom(dependency.pomPath());
+        List<String> details = index.incompleteModules().stream()
+                .filter(modulePom -> {
+                    String relative = modulePom.toString().replace('\\', '/');
+                    return relative.equals(pomPath) || relative.endsWith("/" + pomPath);
+                })
+                .map(Path::getParent)
+                .filter(java.util.Objects::nonNull)
+                .flatMap(moduleDirectory -> index.diagnostics().stream()
+                        .filter(diagnostic -> diagnostic.contains(moduleDirectory.toString())))
+                .distinct()
+                .limit(3)
+                .toList();
+        String message = "Some application classes or modules could not be analyzed.";
+        if (!details.isEmpty()) {
+            message += " Details: " + String.join(" | ", details);
+        }
+        return message;
     }
 
     private static boolean moduleAnalysisIncomplete(
@@ -682,7 +704,8 @@ final class BytecodeAPIUsageAnalyzer {
             Map<ImpactReference, Set<UsageLocation>> locations,
             List<ApplicationCall> applicationCalls,
             Set<Path> incompleteModules,
-            AnalysisSummary summary) {
+            AnalysisSummary summary,
+            List<String> diagnostics) {
     }
 
     private static final class UsageClassVisitor extends ClassVisitor {

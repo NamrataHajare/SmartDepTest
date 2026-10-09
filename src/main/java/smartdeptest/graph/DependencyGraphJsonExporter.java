@@ -32,8 +32,8 @@ public final class DependencyGraphJsonExporter {
             appendValue(json, edge.metadata());
             json.append('}');
         });
-        json.append("],\"applicationAnalysisSummary\":{");
         var summary = result.analysisSummary();
+        json.append("],\"applicationAnalysisSummary\":{");
         json.append("\"modulesDiscovered\":");
         appendValue(json, summary.modulesDiscovered());
         json.append(",\"modulesIncomplete\":");
@@ -51,7 +51,7 @@ public final class DependencyGraphJsonExporter {
         json.append('}');
         json.append(",\"analysisDiagnostics\":");
         appendValue(json, result.analysisDiagnostics());
-        json.append("],\"affectedNodes\":");
+        json.append(",\"affectedNodes\":");
         appendValue(json, result.affectedNodes());
         json.append(",\"directlyImpactedMethods\":");
         appendValue(json, result.directlyImpactedMethods());

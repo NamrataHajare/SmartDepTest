@@ -7,6 +7,9 @@ import org.w3c.dom.NodeList;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
+import org.xml.sax.helpers.DefaultHandler;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -110,7 +113,19 @@ public final class PomParser {
         factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
         factory.setXIncludeAware(false);
         factory.setExpandEntityReferences(false);
-        return factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        var builder = factory.newDocumentBuilder();
+        builder.setErrorHandler(new DefaultHandler() {
+            @Override
+            public void error(SAXParseException exception) throws SAXException {
+                throw exception;
+            }
+
+            @Override
+            public void fatalError(SAXParseException exception) throws SAXException {
+                throw exception;
+            }
+        });
+        return builder.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static String text(Element parent, String name) {

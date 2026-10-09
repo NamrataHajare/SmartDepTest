@@ -20,13 +20,15 @@ public final class DependencyChangeDetector {
         System.out.println("      Found " + pomFiles.size() + " POM file(s).");
         System.out.println("[3/5] Finding POM-related commits in Git history...");
         List<GitRepositoryAnalyzer.CommitCandidate> commits = git.historyCandidates(pomFiles);
-        System.out.println("      Found " + commits.size() + " POM-related commit(s).");
+        System.out.println("      Found " + commits.size() + " POM-related commit candidate(s).");
         System.out.println("[4/5] Inspecting commits for dependency changes...");
-        int inspected = 0;
+        int processedCandidates = 0;
+        List<String> diagnostics = new ArrayList<>();
         for (GitRepositoryAnalyzer.CommitCandidate candidate : commits) {
-            inspected++;
-            if (inspected == 1 || inspected % 25 == 0) {
-                System.out.println("      Inspected " + inspected + "/" + commits.size() + " commit(s)...");
+            processedCandidates++;
+            if (processedCandidates == 1 || processedCandidates % 25 == 0) {
+                System.out.println("      Processed " + processedCandidates + "/" + commits.size()
+                        + " POM-related commit candidate(s)...");
             }
             String commit = candidate.commitId();
             String parent = candidate.firstParentId();
@@ -42,16 +44,22 @@ public final class DependencyChangeDetector {
                     changes.addAll(comparator.compare(oldDependencies, newDependencies, pomPath, commit, parent));
                 } catch (Exception exception) {
                     String detail = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-                    throw new IOException("Unable to parse pom.xml: " + pomPath + " in commit " + commit + ": " + detail, exception);
+                    diagnostics.add("Could not analyze POM " + pomPath + " in commit " + commit + ": " + detail);
                 }
             }
             if (!changes.isEmpty()) {
                 System.out.println("[5/5] Dependency-changing commit found.");
                 return new DependencyChangeResult(projectDirectory.toAbsolutePath().normalize().toString(), commit,
-                        parent, git.commitMessage(commit), changedPoms, changes);
+                        parent, git.commitMessage(commit), changedPoms, changes, diagnostics);
             }
         }
         System.out.println("[5/5] No dependency-changing commit found.");
+        if (!diagnostics.isEmpty()) {
+            String diagnosticSummary = diagnostics.stream().limit(3)
+                    .collect(java.util.stream.Collectors.joining(" | "));
+            throw new IOException("No Maven dependency-changing commit was found in the available Git history. "
+                    + diagnostics.size() + " POM analysis failure(s) occurred. " + diagnosticSummary);
+        }
         if (git.isShallowRepository()) {
             throw new IOException("No Maven dependency-changing commit was found in the available Git history. "
                     + "The repository is shallow; fetch more history and try again.");

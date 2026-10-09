@@ -50,8 +50,11 @@ class MainReportingTest {
         }
 
         String report = output.toString(StandardCharsets.UTF_8);
-        assertTrue(report.contains("Unique affected application methods: 1"));
-        assertTrue(report.contains("Unique API-impact records: 2"));
+        assertTrue(report.contains("Unique application methods with API-use evidence"));
+        assertTrue(report.contains("Application API-reference records"));
+        assertTrue(report.contains("Unique application methods with impact evidence"));
+        assertTrue(report.contains("| Unique application methods with impact evidence | 1 |"));
+        assertTrue(report.contains("API-impact records"));
         assertTrue(report.contains("1 additional API-impact records"));
         assertTrue(!report.contains("more impacted method"));
     }

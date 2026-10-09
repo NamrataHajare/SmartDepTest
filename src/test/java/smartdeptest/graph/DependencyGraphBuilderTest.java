@@ -107,6 +107,13 @@ class DependencyGraphBuilderTest {
                 changes(dependency("org.example", "sample-library", List.of(changedField))),
                 usage(impact("org.example", "sample-library", List.of(finding(changedField, true,
                         location("app/Runner", "configure", "()V", "GETFIELD"))))));
+        result = new DependencyGraphResult(
+                result.graph(), result.affectedNodes(), result.impactPaths(),
+                result.directlyImpactedMethods(), result.indirectlyAffectedMethods(),
+                result.allAffectedMethods(), result.methodTestMapping(), result.selectedTests(),
+                result.groupedSelectedTests(), result.testCoverageStatuses(),
+                new smartdeptest.analysis.APIUsageResult.AnalysisSummary(1, 1, 2, 1, 1, 0, 0),
+                List.of("A class directory could not be enumerated."));
         DependencyGraphJsonExporter exporter = new DependencyGraphJsonExporter();
         String json = exporter.toJson(result);
         Path output = temporaryDirectory.resolve("graph.json");
@@ -116,6 +123,9 @@ class DependencyGraphBuilderTest {
         assertTrue(json.contains("\"edges\":["));
         assertTrue(json.contains("\"affectedNodes\":["));
         assertTrue(json.contains("\"impactPaths\":["));
+        assertTrue(json.contains("\"analysisDiagnostics\":[\"A class directory could not be enumerated.\"],"
+                + "\"affectedNodes\":["));
+        assertTrue(!json.contains("\"analysisDiagnostics\":[]],\"affectedNodes\":["));
         assertTrue(json.contains("\"type\":\"DEPENDENCY\""));
         assertTrue(json.contains("\"type\":\"API\""));
         assertTrue(json.contains("\"type\":\"CLASS\""));
@@ -158,7 +168,12 @@ class DependencyGraphBuilderTest {
         assertTrue(result.graph().getEdges().isEmpty());
         assertTrue(result.affectedNodes().isEmpty());
         assertTrue(result.impactPaths().isEmpty());
-        assertEquals("{\"nodes\":[],\"edges\":[],\"affectedNodes\":[],"
+        assertEquals("{\"nodes\":[],\"edges\":[],\"applicationAnalysisSummary\":{"
+                        + "\"modulesDiscovered\":0,\"modulesIncomplete\":0,"
+                        + "\"classFilesDiscovered\":0,\"classFilesAnalyzed\":0,"
+                        + "\"classFileFailures\":0,\"classDirectoryFailures\":0,"
+                        + "\"duplicateClassFilesSkipped\":0},\"analysisDiagnostics\":[],"
+                        + "\"affectedNodes\":[],"
                         + "\"directlyImpactedMethods\":[],\"indirectlyAffectedMethods\":[],"
                         + "\"allAffectedMethods\":[],\"impactPaths\":[]}",
                 new DependencyGraphJsonExporter().toJson(result));
