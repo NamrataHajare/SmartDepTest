@@ -9,10 +9,13 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class ApplicationModuleScanner {
+
     private final MavenModuleClasspathResolver outputResolver;
 
     ApplicationModuleScanner(MavenModuleClasspathResolver outputResolver) {
@@ -21,72 +24,376 @@ final class ApplicationModuleScanner {
 
     List<ApplicationModule> discover(Path projectDirectory) throws IOException {
         Path projectRoot = projectDirectory.toAbsolutePath().normalize();
-        Map<Path, Path> modulePoms = new LinkedHashMap<>();
+
+        if (!Files.isDirectory(projectRoot)) {
+            throw new IOException(
+                    "Project directory does not exist: " + projectRoot);
+        }
+
+        Map<Path, Path> discoveredPoms = discoverPoms(projectRoot);
+        Set<Path> reactorDirectories = discoverReactorDirectories(
+                projectRoot, discoveredPoms);
+
+        List<ApplicationModule> modules = new ArrayList<>();
+
+        for (Path moduleDirectory : reactorDirectories) {
+            Path pom = discoveredPoms.get(moduleDirectory);
+
+            if (pom == null || !Files.isRegularFile(pom)) {
+                continue;
+            }
+
+            boolean hasMainSources = hasMainSources(moduleDirectory);
+            boolean hasConfiguredSources =
+                    hasSourceDirectoryConfiguration(moduleDirectory, projectRoot);
+            boolean hasApplicationSources =
+                    hasMainSources || hasConfiguredSources;
+            boolean hasDefaultOutput =
+                    Files.isDirectory(moduleDirectory.resolve("target/classes"));
+            boolean hasBuildConfiguration =
+                    hasBuildDiscoveryConfiguration(moduleDirectory, projectRoot);
+
+            if (!hasApplicationSources && !hasDefaultOutput
+                    && !hasBuildConfiguration) {
+                continue;
+            }
+
+            ApplicationModule unresolved = new ApplicationModule(
+                    projectRoot,
+                    moduleDirectory,
+                    pom,
+                    List.of(),
+                    hasApplicationSources);
+
+            List<Path> classesDirectories;
+
+            try {
+                classesDirectories =
+                        outputResolver.resolveOutputDirectories(unresolved);
+            } catch (IOException | RuntimeException exception) {
+                /*
+                 * Isolate output discovery failure to this module.
+                 * Preserve the conventional output location as a fallback.
+                 * The bytecode analyzer will determine whether the output
+                 * is actually available before claiming an impact result.
+                 */
+                Path conventionalOutput =
+                        moduleDirectory.resolve("target/classes");
+
+                System.err.printf(
+                        "[WARN] Output discovery unavailable for module %s: %s%n",
+                        moduleDirectory,
+                        messageOf(exception));
+
+                if (Files.isDirectory(conventionalOutput)) {
+                    classesDirectories = List.of(conventionalOutput);
+                } else if (hasApplicationSources) {
+                    classesDirectories = List.of(conventionalOutput);
+                } else {
+                    continue;
+                }
+            }
+
+            if (classesDirectories == null) {
+                classesDirectories = List.of();
+            }
+
+            List<Path> normalizedDirectories = classesDirectories.stream()
+                    .filter(path -> path != null)
+                    .map(path -> path.isAbsolute()
+                            ? path.normalize()
+                            : moduleDirectory.resolve(path).normalize())
+                    .distinct()
+                    .toList();
+
+            boolean hasExistingOutput = normalizedDirectories.stream()
+                    .anyMatch(Files::isDirectory);
+
+            if (hasApplicationSources || hasExistingOutput) {
+                modules.add(new ApplicationModule(
+                        projectRoot,
+                        moduleDirectory,
+                        pom,
+                        normalizedDirectories,
+                        hasApplicationSources));
+            }
+        }
+
+        modules.sort(Comparator.comparing(
+                module -> module.moduleDirectory().toString()));
+
+        if (modules.isEmpty()) {
+            System.err.printf(
+                    "[WARN] No application modules with source roots or compiled output "
+                            + "were discovered under %s.%n",
+                    projectRoot);
+        }
+
+        return List.copyOf(modules);
+    }
+
+    private static Map<Path, Path> discoverPoms(Path projectRoot)
+            throws IOException {
+
+        Map<Path, Path> poms = new LinkedHashMap<>();
+
         Files.walkFileTree(projectRoot, new SimpleFileVisitor<>() {
             @Override
-            public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                if (!directory.equals(projectRoot) && (directory.getFileName().toString().equals(".git")
-                        || directory.getFileName().toString().equals("node_modules"))) {
-                    return FileVisitResult.SKIP_SUBTREE;
+            public FileVisitResult preVisitDirectory(
+                    Path directory,
+                    BasicFileAttributes attributes) {
+
+                if (!directory.equals(projectRoot)) {
+                    Path name = directory.getFileName();
+
+                    if (name != null
+                            && (name.toString().equals(".git")
+                            || name.toString().equals("node_modules")
+                            || name.toString().equals("target"))) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
                 }
-                if (directory.getFileName().toString().equals("target")) {
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
+
                 Path pom = directory.resolve("pom.xml");
-                if (Files.isRegularFile(pom)) modulePoms.put(directory, pom);
+
+                if (Files.isRegularFile(pom)) {
+                    poms.put(directory.toAbsolutePath().normalize(), pom);
+                }
+
                 return FileVisitResult.CONTINUE;
             }
         });
 
-        List<ApplicationModule> modules = new ArrayList<>();
-        for (Map.Entry<Path, Path> module : modulePoms.entrySet()) {
-            boolean hasMainSources = Files.isDirectory(module.getKey().resolve("src/main/java"))
-                    || Files.isDirectory(module.getKey().resolve("src/main/kotlin"))
-                    || Files.isDirectory(module.getKey().resolve("src/main/scala"));
-            boolean hasConfiguredSources = hasSourceDirectoryConfiguration(module.getKey(), projectRoot);
-            boolean hasApplicationSources = hasMainSources || hasConfiguredSources;
-            boolean hasDefaultOutput = Files.isDirectory(module.getKey().resolve("target/classes"));
-            if (!hasApplicationSources && !hasDefaultOutput
-                    && !hasBuildDiscoveryConfiguration(module.getKey(), projectRoot)) continue;
-            ApplicationModule unresolved = new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
-                    List.of(), hasApplicationSources);
-            List<Path> classesDirectories;
-            try {
-                classesDirectories = outputResolver.resolveOutputDirectories(unresolved);
-            } catch (IOException exception) {
-                if (hasApplicationSources || hasDefaultOutput) {
-                    throw exception;
+        return poms;
+    }
+
+    private static Set<Path> discoverReactorDirectories(
+            Path projectRoot,
+            Map<Path, Path> discoveredPoms) {
+
+        Set<Path> reactor = new LinkedHashSet<>();
+        Set<Path> visited = new LinkedHashSet<>();
+
+        Path rootPom = discoveredPoms.get(projectRoot);
+
+        if (rootPom == null) {
+            /*
+             * A project without a root pom.xml may still contain a Maven
+             * project at its root or in a subdirectory. Retain discovered
+             * POMs in this fallback case rather than silently losing them.
+             */
+            reactor.addAll(discoveredPoms.keySet());
+            return reactor;
+        }
+
+        collectReactorModules(
+                projectRoot,
+                projectRoot,
+                discoveredPoms,
+                reactor,
+                visited);
+
+        return reactor;
+    }
+
+    private static void collectReactorModules(
+            Path projectRoot,
+            Path moduleDirectory,
+            Map<Path, Path> discoveredPoms,
+            Set<Path> reactor,
+            Set<Path> visited) {
+
+        Path normalizedDirectory =
+                moduleDirectory.toAbsolutePath().normalize();
+
+        if (!normalizedDirectory.startsWith(projectRoot)
+                || !visited.add(normalizedDirectory)) {
+            return;
+        }
+
+        Path pom = discoveredPoms.get(normalizedDirectory);
+
+        if (pom == null) {
+            return;
+        }
+
+        reactor.add(normalizedDirectory);
+
+        try {
+            for (String declaredModule : readDeclaredModules(pom)) {
+                Path childDirectory = normalizedDirectory
+                        .resolve(declaredModule)
+                        .normalize()
+                        .toAbsolutePath();
+
+                if (!childDirectory.startsWith(projectRoot)) {
+                    System.err.printf(
+                            "[WARN] Maven module path is outside the project root "
+                                    + "and was not scanned: %s%n",
+                            childDirectory);
+                    continue;
                 }
+
+                if (!discoveredPoms.containsKey(childDirectory)) {
+                    System.err.printf(
+                            "[WARN] Declared Maven module has no pom.xml: %s%n",
+                            childDirectory);
+                    continue;
+                }
+
+                collectReactorModules(
+                        projectRoot,
+                        childDirectory,
+                        discoveredPoms,
+                        reactor,
+                        visited);
+            }
+        } catch (IOException exception) {
+            System.err.printf(
+                    "[WARN] Could not read module declarations from %s: %s%n",
+                    pom,
+                    messageOf(exception));
+        }
+    }
+
+    private static List<String> readDeclaredModules(Path pom)
+            throws IOException {
+
+        /*
+         * Read direct <modules><module> declarations from the POM.
+         * XML parsing is used instead of string matching so comments and
+         * unrelated XML elements do not become module paths.
+         */
+        try {
+            javax.xml.parsers.DocumentBuilderFactory factory =
+                    javax.xml.parsers.DocumentBuilderFactory.newInstance();
+
+            factory.setFeature(
+                    "http://apache.org/xml/features/disallow-doctype-decl",
+                    true);
+            factory.setFeature(
+                    "http://xml.org/sax/features/external-general-entities",
+                    false);
+            factory.setFeature(
+                    "http://xml.org/sax/features/external-parameter-entities",
+                    false);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
+
+            org.w3c.dom.Document document =
+                    factory.newDocumentBuilder().parse(pom.toFile());
+
+            org.w3c.dom.Element project =
+                    document.getDocumentElement();
+
+            List<String> modules = new ArrayList<>();
+
+            org.w3c.dom.NodeList children = project.getChildNodes();
+
+            for (int i = 0; i < children.getLength(); i++) {
+                org.w3c.dom.Node child = children.item(i);
+
+                if (child.getNodeType()
+                        != org.w3c.dom.Node.ELEMENT_NODE) {
+                    continue;
+                }
+
+                if (!"modules".equals(child.getLocalName())
+                        && !"modules".equals(child.getNodeName())) {
+                    continue;
+                }
+
+                org.w3c.dom.NodeList entries = child.getChildNodes();
+
+                for (int j = 0; j < entries.getLength(); j++) {
+                    org.w3c.dom.Node entry = entries.item(j);
+
+                    if (entry.getNodeType()
+                            == org.w3c.dom.Node.ELEMENT_NODE
+                            && ("module".equals(entry.getLocalName())
+                            || "module".equals(entry.getNodeName()))) {
+
+                        String value = entry.getTextContent().trim();
+
+                        if (!value.isBlank()
+                                && !value.contains("${")) {
+                            modules.add(value);
+                        } else if (value.contains("${")) {
+                            System.err.printf(
+                                    "[WARN] Module path uses an unresolved Maven property "
+                                            + "in %s: %s%n",
+                                    pom,
+                                    value);
+                        }
+                    }
+                }
+            }
+
+            return modules;
+        } catch (javax.xml.parsers.ParserConfigurationException
+                 | org.xml.sax.SAXException exception) {
+            throw new IOException(
+                    "Could not parse Maven module declarations in " + pom,
+                    exception);
+        }
+    }
+
+    private static boolean hasMainSources(Path moduleDirectory) {
+        return Files.isDirectory(moduleDirectory.resolve("src/main/java"))
+                || Files.isDirectory(moduleDirectory.resolve("src/main/kotlin"))
+                || Files.isDirectory(moduleDirectory.resolve("src/main/scala"));
+    }
+
+    private static boolean hasBuildDiscoveryConfiguration(
+            Path moduleDirectory,
+            Path projectRoot) throws IOException {
+
+        for (Path directory = moduleDirectory;
+             directory != null && directory.startsWith(projectRoot);
+             directory = directory.getParent()) {
+
+            Path pom = directory.resolve("pom.xml");
+
+            if (!Files.isRegularFile(pom)) {
                 continue;
             }
-            if (hasApplicationSources || classesDirectories.stream().anyMatch(Files::isDirectory)) {
-                modules.add(new ApplicationModule(projectRoot, module.getKey(), module.getValue(),
-                        classesDirectories, hasApplicationSources));
+
+            String contents = Files.readString(pom);
+
+            if (contents.contains("<outputDirectory")
+                    || contents.contains("<directory>")
+                    || contents.contains("<sourceDirectory")) {
+                return true;
             }
         }
-        modules.sort(Comparator.comparing(module -> module.moduleDirectory().toString()));
-        return List.copyOf(modules);
-    }
 
-    private static boolean hasBuildDiscoveryConfiguration(Path moduleDirectory, Path projectRoot) throws IOException {
-        for (Path directory = moduleDirectory; directory != null && directory.startsWith(projectRoot);
-             directory = directory.getParent()) {
-            Path pom = directory.resolve("pom.xml");
-            if (!Files.isRegularFile(pom)) continue;
-            String contents = Files.readString(pom);
-            if (contents.contains("<outputDirectory") || contents.contains("<directory>")
-                    || contents.contains("<sourceDirectory")) return true;
-        }
         return false;
     }
 
-    private static boolean hasSourceDirectoryConfiguration(Path moduleDirectory, Path projectRoot)
-            throws IOException {
-        for (Path directory = moduleDirectory; directory != null && directory.startsWith(projectRoot);
+    private static boolean hasSourceDirectoryConfiguration(
+            Path moduleDirectory,
+            Path projectRoot) throws IOException {
+
+        for (Path directory = moduleDirectory;
+             directory != null && directory.startsWith(projectRoot);
              directory = directory.getParent()) {
+
             Path pom = directory.resolve("pom.xml");
-            if (Files.isRegularFile(pom) && Files.readString(pom).contains("<sourceDirectory")) return true;
+
+            if (Files.isRegularFile(pom)
+                    && Files.readString(pom).contains("<sourceDirectory")) {
+                return true;
+            }
         }
+
         return false;
+    }
+
+    private static String messageOf(Throwable exception) {
+        String message = exception.getMessage();
+
+        return message == null || message.isBlank()
+                ? exception.getClass().getSimpleName()
+                : message;
     }
 }

@@ -7,6 +7,7 @@ public final class DependencyChange {
     private final String groupId;
     private final String artifactId;
     private final String oldVersion;
+    
     private final String newVersion;
     private final String oldScope;
     private final String newScope;

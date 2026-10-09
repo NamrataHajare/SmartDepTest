@@ -1,14 +1,18 @@
+
 package smartdeptest.analysis;
 
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeResult;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 
 public final class APIChangeAnalyzer {
     private final MavenArtifactResolver artifactResolver;
@@ -23,108 +27,247 @@ public final class APIChangeAnalyzer {
     }
 
     public APIChangeResult analyze(DependencyChangeResult dependencyChanges) {
-        Path projectDirectory = Path.of(dependencyChanges.getProjectPath()).toAbsolutePath().normalize();
+        Path projectDirectory = Path.of(dependencyChanges.getProjectPath())
+                .toAbsolutePath()
+                .normalize();
+
         Map<String, DependencyChange> uniqueChanges = new LinkedHashMap<>();
+
         for (DependencyChange change : dependencyChanges.getChanges()) {
             String key = change.getGroupId() + ":" + change.getArtifactId() + ":"
                     + change.getOldVersion() + ":" + change.getNewVersion() + ":"
                     + change.getOldClassifier() + ":" + change.getNewClassifier() + ":"
-                    + change.getOldType() + ":" + change.getNewType() + ":" + change.getPomPath();
+                    + change.getOldType() + ":" + change.getNewType() + ":"
+                    + change.getPomPath();
+
             uniqueChanges.merge(key, change,
-                    (existing, candidate) -> existing.isDependencyManagement() && !candidate.isDependencyManagement()
-                            ? candidate
-                            : existing);
+                    (existing, candidate) ->
+                            existing.isDependencyManagement()
+                                    && !candidate.isDependencyManagement()
+                                    ? candidate : existing);
         }
 
         List<DependencyApiResult> results = new ArrayList<>();
+
         for (DependencyChange change : uniqueChanges.values()) {
-            results.add(analyzeDependency(change, projectDirectory));
+            try {
+                results.add(analyzeDependency(change, projectDirectory));
+            } catch (RuntimeException exception) {
+                results.add(unavailable(change, null, null,
+                        messageOf(exception)));
+            }
         }
-        return new APIChangeResult(dependencyChanges.getProjectPath(), results);
+
+        return new APIChangeResult(
+                dependencyChanges.getProjectPath(), results);
     }
 
-    private DependencyApiResult analyzeDependency(DependencyChange change, Path projectDirectory) {
-        String groupId = change.getGroupId();
-        String artifactId = change.getArtifactId();
-        String oldVersion = change.getOldVersion();
-        String newVersion = change.getNewVersion();
-        if ((!change.getOldType().isBlank() && !"jar".equals(change.getOldType()))
-                || (!change.getNewType().isBlank() && !"jar".equals(change.getNewType()))) {
+    private DependencyApiResult analyzeDependency(
+            DependencyChange change, Path projectDirectory) {
+
+        String oldVersion = normalizeVersion(change.getOldVersion());
+        String newVersion = normalizeVersion(change.getNewVersion());
+
+        boolean hasOldVersion = hasVersion(oldVersion);
+        boolean hasNewVersion = hasVersion(newVersion);
+
+        if ((!change.getOldType().isBlank()
+                && !"jar".equals(change.getOldType()))
+                || (!change.getNewType().isBlank()
+                && !"jar".equals(change.getNewType()))) {
             return unavailable(change, null, null,
-                    "API analysis currently supports JAR dependencies, not Maven type "
-                            + change.getNewType() + ".");
+                    "API analysis currently supports JAR dependencies only.");
         }
-        if (oldVersion.isBlank() || newVersion.isBlank() || oldVersion.equals("NOT_SPECIFIED")
-                || newVersion.equals("NOT_SPECIFIED")) {
+
+        if (!hasOldVersion && !hasNewVersion) {
             return unavailable(change, null, null,
-                    "Both old and new dependency versions are required for API comparison.");
+                    "Neither an old nor a new dependency version is available.");
         }
-        if (oldVersion.equals(newVersion)) {
-            return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
-                    change.getOldClassifier(), change.getNewClassifier(), change.getOldScope(), change.getNewScope(),
-                    change.getOldType(), change.getNewType(), change.isDependencyManagement(),
-                    change.getPomPath(), "", "", "", "",
+
+        if (hasOldVersion && hasNewVersion
+                && oldVersion.equals(newVersion)) {
+            return new DependencyApiResult(
+                    change.getGroupId(), change.getArtifactId(),
+                    oldVersion, newVersion,
+                    change.getOldClassifier(), change.getNewClassifier(),
+                    change.getOldScope(), change.getNewScope(),
+                    change.getOldType(), change.getNewType(),
+                    change.isDependencyManagement(), change.getPomPath(),
+                    "", "", "", "",
                     DependencyApiResult.Status.ANALYZED,
-                    "Dependency version did not change; JAR comparison was skipped.", List.of());
+                    "Dependency version did not change; JAR comparison was skipped.",
+                    List.of());
         }
 
         MavenArtifactResolver.ResolvedArtifact oldArtifact = null;
         MavenArtifactResolver.ResolvedArtifact newArtifact = null;
+        Path emptyJar = null;
+
         try {
-            oldArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
-                    artifactId, oldVersion, change.getOldClassifier());
-            newArtifact = artifactResolver.resolveJar(projectDirectory, change.getPomPath(), groupId,
-                    artifactId, newVersion, change.getNewClassifier());
-            long comparisonStarted = System.nanoTime();
+            if (hasOldVersion) {
+                oldArtifact = artifactResolver.resolveJar(
+                        projectDirectory, change.getPomPath(),
+                        change.getGroupId(), change.getArtifactId(),
+                        oldVersion, change.getOldClassifier());
+            }
+
+            if (hasNewVersion) {
+                newArtifact = artifactResolver.resolveJar(
+                        projectDirectory, change.getPomPath(),
+                        change.getGroupId(), change.getArtifactId(),
+                        newVersion, change.getNewClassifier());
+            }
+
+            /*
+             * A dependency addition has no old JAR.
+             * A dependency removal has no new JAR.
+             * Compare the available side against an empty JAR so JApiCmp
+             * can report one-sided API additions or removals.
+             */
+            emptyJar = createEmptyJar();
+
+            Path oldJar = oldArtifact == null
+                    ? emptyJar : oldArtifact.jar();
+            Path newJar = newArtifact == null
+                    ? emptyJar : newArtifact.jar();
+
+            long started = System.nanoTime();
+
             List<ApiChange> changes;
             String comparisonMessage = "";
+
             try {
-                changes = apiComparator.compare(oldArtifact.jar(), newArtifact.jar(),
-                        List.of(), List.of(), false);
+                changes = apiComparator.compare(
+                        oldJar, newJar, List.of(), List.of(), false);
             } catch (RuntimeException strictFailure) {
                 String detail = strictFailure.getMessage();
 
-                if (detail == null
-                        || (!detail.contains("Class not found:")
-                                && !detail.contains("Could not load")
-                                && !detail.contains(
-                                        "Please make sure that all libraries have been added to the classpath"))) {
+                if (!isMissingClasspathFailure(detail)) {
                     throw strictFailure;
                 }
 
-                changes = apiComparator.compare(oldArtifact.jar(), newArtifact.jar(),
-                        List.of(), List.of(), true);
+                changes = apiComparator.compare(
+                        oldJar, newJar, List.of(), List.of(), true);
 
-                comparisonMessage = "JApiCmp ignored unresolved transitive class references: " + detail;
+                comparisonMessage =
+                        "JApiCmp ignored unresolved transitive class references: "
+                                + detail;
             }
-            System.out.printf("JApiCmp analysis for %s:%s completed in %d ms.%n", groupId, artifactId,
-                    (System.nanoTime() - comparisonStarted) / 1_000_000);
-            return new DependencyApiResult(groupId, artifactId, oldVersion, newVersion,
-                    change.getOldClassifier(), change.getNewClassifier(), change.getOldScope(), change.getNewScope(),
-                    change.getOldType(), change.getNewType(), change.isDependencyManagement(), change.getPomPath(),
-                    oldArtifact.jar().toString(), newArtifact.jar().toString(),
-                    oldArtifact.source(), newArtifact.source(),
-                    DependencyApiResult.Status.ANALYZED, comparisonMessage, changes);
+
+            if (!hasOldVersion) {
+                comparisonMessage = appendMessage(
+                        comparisonMessage,
+                        "Added dependency: API compared against an empty baseline.");
+            } else if (!hasNewVersion) {
+                comparisonMessage = appendMessage(
+                        comparisonMessage,
+                        "Removed dependency: API compared against an empty target.");
+            }
+
+            System.out.printf(
+                    "JApiCmp analysis for %s:%s completed in %d ms.%n",
+                    change.getGroupId(), change.getArtifactId(),
+                    (System.nanoTime() - started) / 1_000_000);
+
+            return new DependencyApiResult(
+                    change.getGroupId(), change.getArtifactId(),
+                    oldVersion, newVersion,
+                    change.getOldClassifier(), change.getNewClassifier(),
+                    change.getOldScope(), change.getNewScope(),
+                    change.getOldType(), change.getNewType(),
+                    change.isDependencyManagement(), change.getPomPath(),
+                    oldArtifact == null ? "" : oldArtifact.jar().toString(),
+                    newArtifact == null ? "" : newArtifact.jar().toString(),
+                    oldArtifact == null ? "" : oldArtifact.source(),
+                    newArtifact == null ? "" : newArtifact.source(),
+                    DependencyApiResult.Status.ANALYZED,
+                    comparisonMessage, changes);
+
         } catch (IOException | RuntimeException exception) {
-            String message = exception.getMessage() == null ? exception.getClass().getSimpleName()
-                    : exception.getMessage();
-            return unavailable(change, oldArtifact, newArtifact, message);
+            return unavailable(change, oldArtifact, newArtifact,
+                    messageOf(exception));
+        } finally {
+            if (emptyJar != null) {
+                try {
+                    Files.deleteIfExists(emptyJar);
+                } catch (IOException exception) {
+                    System.err.printf(
+                            "[WARN] Could not remove temporary comparison JAR: %s%n",
+                            emptyJar);
+                }
+            }
         }
     }
 
-    private static DependencyApiResult unavailable(DependencyChange change,
+    private static Path createEmptyJar() throws IOException {
+        Path jar = Files.createTempFile(
+                "smartdeptest-empty-api-", ".jar");
+
+        try {
+            Manifest manifest = new Manifest();
+            manifest.getMainAttributes().putValue(
+                    "Manifest-Version", "1.0");
+
+            try (JarOutputStream ignored = new JarOutputStream(
+                    Files.newOutputStream(jar), manifest)) {
+                // An empty JAR is the baseline/target for one-sided comparison.
+            }
+
+            return jar;
+        } catch (IOException | RuntimeException exception) {
+            Files.deleteIfExists(jar);
+            throw exception;
+        }
+    }
+
+    private static boolean isMissingClasspathFailure(String detail) {
+        return detail != null
+                && (detail.contains("Class not found:")
+                || detail.contains("Could not load")
+                || detail.contains(
+                        "Please make sure that all libraries have been added to the classpath"));
+    }
+
+    private static String normalizeVersion(String version) {
+        return version == null ? "" : version.trim();
+    }
+
+    private static boolean hasVersion(String version) {
+        return version != null && !version.isBlank()
+                && !"NOT_SPECIFIED".equals(version);
+    }
+
+    private static String appendMessage(String existing, String additional) {
+        return existing == null || existing.isBlank()
+                ? additional : existing + " " + additional;
+    }
+
+    private static String messageOf(Throwable exception) {
+        String message = exception.getMessage();
+
+        return message == null || message.isBlank()
+                ? exception.getClass().getSimpleName()
+                : message;
+    }
+
+    private static DependencyApiResult unavailable(
+            DependencyChange change,
             MavenArtifactResolver.ResolvedArtifact oldArtifact,
             MavenArtifactResolver.ResolvedArtifact newArtifact,
             String message) {
-        return new DependencyApiResult(change.getGroupId(), change.getArtifactId(),
-                change.getOldVersion(), change.getNewVersion(), change.getOldClassifier(), change.getNewClassifier(),
-                change.getOldScope(), change.getNewScope(), change.getOldType(), change.getNewType(),
-                change.isDependencyManagement(),
-                change.getPomPath(),
+
+        return new DependencyApiResult(
+                change.getGroupId(), change.getArtifactId(),
+                change.getOldVersion(), change.getNewVersion(),
+                change.getOldClassifier(), change.getNewClassifier(),
+                change.getOldScope(), change.getNewScope(),
+                change.getOldType(), change.getNewType(),
+                change.isDependencyManagement(), change.getPomPath(),
                 oldArtifact == null ? "" : oldArtifact.jar().toString(),
                 newArtifact == null ? "" : newArtifact.jar().toString(),
                 oldArtifact == null ? "" : oldArtifact.source(),
                 newArtifact == null ? "" : newArtifact.source(),
-                DependencyApiResult.Status.UNAVAILABLE, message, List.of());
+                DependencyApiResult.Status.UNAVAILABLE,
+                message, List.of());
     }
 }

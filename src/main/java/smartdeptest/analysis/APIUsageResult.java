@@ -2,11 +2,18 @@ package smartdeptest.analysis;
 
 import java.util.List;
 
-public record APIUsageResult(String projectPath, List<DependencyImpact> dependencies,
+public record APIUsageResult(String projectPath,
+                             List<DependencyImpact> dependencies,
                              List<ApplicationCall> applicationCalls) {
-    public enum Classification { POTENTIAL_IMPACT, NO_IDENTIFIED_IMPACT, ANALYSIS_UNAVAILABLE }
 
-    public APIUsageResult(String projectPath, List<DependencyImpact> dependencies) {
+    public enum Classification {
+        POTENTIAL_IMPACT,
+        NO_IDENTIFIED_IMPACT,
+        ANALYSIS_UNAVAILABLE
+    }
+
+    public APIUsageResult(String projectPath,
+                          List<DependencyImpact> dependencies) {
         this(projectPath, dependencies, List.of());
     }
 
@@ -15,22 +22,86 @@ public record APIUsageResult(String projectPath, List<DependencyImpact> dependen
         applicationCalls = List.copyOf(applicationCalls);
     }
 
-    public record ApplicationCall(String sourceClassName, String sourceMethodName,
-                                  String sourceMethodDescriptor, String targetClassName,
-                                  String targetMethodName, String targetMethodDescriptor,
-                                  String instructionType) {}
+    public record ApplicationCall(
+            String sourceClassName,
+            String sourceMethodName,
+            String sourceMethodDescriptor,
+            String targetClassName,
+            String targetMethodName,
+            String targetMethodDescriptor,
+            String instructionType,
+            String modulePath) {
 
-    public record DependencyImpact(String dependencyKey, String oldVersion, String newVersion,
-                                   String oldClassifier, String newClassifier, String pomPath,
-                                   String oldScope, String newScope, String oldType, String newType,
-                                   boolean dependencyManagement,
-                                   Classification classification, String message,
-                                   List<UsageFinding> findings) {
-        public DependencyImpact(String dependencyKey, String oldVersion, String newVersion,
-                                Classification classification, String message,
-                                List<UsageFinding> findings) {
-            this(dependencyKey, oldVersion, newVersion, "", "", "", "", "", "", "", false,
-                    classification, message, findings);
+        /*
+         * Backward-compatible constructor.
+         *
+         * Existing code/tests that create ApplicationCall with
+         * 7 arguments will continue to work.
+         */
+        public ApplicationCall(
+                String sourceClassName,
+                String sourceMethodName,
+                String sourceMethodDescriptor,
+                String targetClassName,
+                String targetMethodName,
+                String targetMethodDescriptor,
+                String instructionType) {
+
+            this(
+                    sourceClassName,
+                    sourceMethodName,
+                    sourceMethodDescriptor,
+                    targetClassName,
+                    targetMethodName,
+                    targetMethodDescriptor,
+                    instructionType,
+                    "");
+        }
+
+        public ApplicationCall {
+            modulePath = modulePath == null ? "" : modulePath;
+        }
+    }
+
+    public record DependencyImpact(
+            String dependencyKey,
+            String oldVersion,
+            String newVersion,
+            String oldClassifier,
+            String newClassifier,
+            String pomPath,
+            String oldScope,
+            String newScope,
+            String oldType,
+            String newType,
+            boolean dependencyManagement,
+            Classification classification,
+            String message,
+            List<UsageFinding> findings) {
+
+        public DependencyImpact(
+                String dependencyKey,
+                String oldVersion,
+                String newVersion,
+                Classification classification,
+                String message,
+                List<UsageFinding> findings) {
+
+            this(
+                    dependencyKey,
+                    oldVersion,
+                    newVersion,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    false,
+                    classification,
+                    message,
+                    findings);
         }
 
         public DependencyImpact {
@@ -46,12 +117,45 @@ public record APIUsageResult(String projectPath, List<DependencyImpact> dependen
         }
     }
 
-    public record UsageFinding(ApiChange change, boolean used, List<UsageLocation> locations) {
+    public record UsageFinding(
+            ApiChange change,
+            boolean used,
+            List<UsageLocation> locations) {
+
         public UsageFinding {
             locations = List.copyOf(locations);
         }
     }
 
-    public record UsageLocation(String className, String methodName,
-                                String methodDescriptor, String instructionType) {}
+    public record UsageLocation(
+            String className,
+            String methodName,
+            String methodDescriptor,
+            String instructionType,
+            String modulePath) {
+
+        /*
+         * Backward-compatible constructor.
+         *
+         * Existing code/tests that create UsageLocation with
+         * 4 arguments will continue to work.
+         */
+        public UsageLocation(
+                String className,
+                String methodName,
+                String methodDescriptor,
+                String instructionType) {
+
+            this(
+                    className,
+                    methodName,
+                    methodDescriptor,
+                    instructionType,
+                    "");
+        }
+
+        public UsageLocation {
+            modulePath = modulePath == null ? "" : modulePath;
+        }
+    }
 }
