@@ -4,7 +4,9 @@ import java.util.List;
 
 public record APIUsageResult(String projectPath,
                              List<DependencyImpact> dependencies,
-                             List<ApplicationCall> applicationCalls) {
+                             List<ApplicationCall> applicationCalls,
+                             AnalysisSummary analysisSummary,
+                             List<String> diagnostics) {
 
     public enum Classification {
         POTENTIAL_IMPACT,
@@ -14,12 +16,29 @@ public record APIUsageResult(String projectPath,
 
     public APIUsageResult(String projectPath,
                           List<DependencyImpact> dependencies) {
-        this(projectPath, dependencies, List.of());
+        this(projectPath, dependencies, List.of(), AnalysisSummary.empty(), List.of());
+    }
+
+    public APIUsageResult(String projectPath,
+                          List<DependencyImpact> dependencies,
+                          List<ApplicationCall> applicationCalls) {
+        this(projectPath, dependencies, applicationCalls, AnalysisSummary.empty(), List.of());
     }
 
     public APIUsageResult {
         dependencies = List.copyOf(dependencies);
         applicationCalls = List.copyOf(applicationCalls);
+        analysisSummary = analysisSummary == null ? AnalysisSummary.empty() : analysisSummary;
+        diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
+    }
+
+    public record AnalysisSummary(int modulesDiscovered, int modulesIncomplete,
+                                  int classFilesDiscovered, int classFilesAnalyzed,
+                                  int classFileFailures, int classDirectoryFailures,
+                                  int duplicateClassFilesSkipped) {
+        public static AnalysisSummary empty() {
+            return new AnalysisSummary(0, 0, 0, 0, 0, 0, 0);
+        }
     }
 
     public record ApplicationCall(

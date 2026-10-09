@@ -25,6 +25,8 @@ public final class ImpactPropagator {
         Set<String> allAffected = new LinkedHashSet<>(directlyImpacted);
         allAffected.addAll(indirectlyAffected);
         return new DependencyGraphResult(result.graph(), result.affectedNodes(), result.impactPaths(),
-                List.copyOf(directlyImpacted), List.copyOf(indirectlyAffected), List.copyOf(allAffected));
+            List.copyOf(directlyImpacted), List.copyOf(indirectlyAffected), List.copyOf(allAffected),
+            result.methodTestMapping(), result.selectedTests(), result.groupedSelectedTests(),
+            result.testCoverageStatuses(), result.analysisSummary(), result.analysisDiagnostics());
     }
 }

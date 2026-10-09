@@ -11,11 +11,14 @@ public record DependencyGraphResult(DependencyGraph graph, List<String> affected
                                     List<MethodTestCoverage> methodTestMapping,
                                     List<String> selectedTests,
                                     List<AffectedMethodTestGroup> groupedSelectedTests,
-                                    List<TestCoverageStatus> testCoverageStatuses) {
+                                    List<TestCoverageStatus> testCoverageStatuses,
+                                    smartdeptest.analysis.APIUsageResult.AnalysisSummary analysisSummary,
+                                    List<String> analysisDiagnostics) {
     public DependencyGraphResult(DependencyGraph graph, List<String> affectedNodes,
                                  List<ImpactPath> impactPaths) {
         this(graph, affectedNodes, impactPaths, List.of(), List.of(), List.of(),
-                List.of(), List.of(), List.of(), List.of());
+            List.of(), List.of(), List.of(), List.of(),
+            smartdeptest.analysis.APIUsageResult.AnalysisSummary.empty(), List.of());
     }
 
     public DependencyGraphResult(DependencyGraph graph, List<String> affectedNodes,
@@ -24,7 +27,8 @@ public record DependencyGraphResult(DependencyGraph graph, List<String> affected
                                  List<String> indirectlyAffectedMethods,
                                  List<String> allAffectedMethods) {
         this(graph, affectedNodes, impactPaths, directlyImpactedMethods,
-                indirectlyAffectedMethods, allAffectedMethods, List.of(), List.of(), List.of(), List.of());
+            indirectlyAffectedMethods, allAffectedMethods, List.of(), List.of(), List.of(), List.of(),
+            smartdeptest.analysis.APIUsageResult.AnalysisSummary.empty(), List.of());
     }
 
     public DependencyGraphResult(DependencyGraph graph, List<String> affectedNodes,
@@ -36,7 +40,22 @@ public record DependencyGraphResult(DependencyGraph graph, List<String> affected
                                  List<String> selectedTests,
                                  List<AffectedMethodTestGroup> groupedSelectedTests) {
         this(graph, affectedNodes, impactPaths, directlyImpactedMethods, indirectlyAffectedMethods,
-                allAffectedMethods, methodTestMapping, selectedTests, groupedSelectedTests, List.of());
+            allAffectedMethods, methodTestMapping, selectedTests, groupedSelectedTests, List.of(),
+            smartdeptest.analysis.APIUsageResult.AnalysisSummary.empty(), List.of());
+        }
+
+        public DependencyGraphResult(DependencyGraph graph, List<String> affectedNodes,
+                     List<ImpactPath> impactPaths,
+                     List<String> directlyImpactedMethods,
+                     List<String> indirectlyAffectedMethods,
+                     List<String> allAffectedMethods,
+                     List<MethodTestCoverage> methodTestMapping,
+                     List<String> selectedTests,
+                     List<AffectedMethodTestGroup> groupedSelectedTests,
+                     List<TestCoverageStatus> testCoverageStatuses) {
+        this(graph, affectedNodes, impactPaths, directlyImpactedMethods, indirectlyAffectedMethods,
+            allAffectedMethods, methodTestMapping, selectedTests, groupedSelectedTests,
+            testCoverageStatuses, smartdeptest.analysis.APIUsageResult.AnalysisSummary.empty(), List.of());
     }
 
     public DependencyGraphResult {
@@ -49,6 +68,9 @@ public record DependencyGraphResult(DependencyGraph graph, List<String> affected
         selectedTests = List.copyOf(selectedTests);
         groupedSelectedTests = List.copyOf(groupedSelectedTests);
         testCoverageStatuses = List.copyOf(testCoverageStatuses);
+        analysisSummary = analysisSummary == null
+            ? smartdeptest.analysis.APIUsageResult.AnalysisSummary.empty() : analysisSummary;
+        analysisDiagnostics = analysisDiagnostics == null ? List.of() : List.copyOf(analysisDiagnostics);
     }
 
     public record MethodTestCoverage(String applicationMethod, String testClass, String testMethod) {

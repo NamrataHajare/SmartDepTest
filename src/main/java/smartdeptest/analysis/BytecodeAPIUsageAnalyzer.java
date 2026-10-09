@@ -9,6 +9,7 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import smartdeptest.analysis.APIUsageResult.ApplicationCall;
+import smartdeptest.analysis.APIUsageResult.AnalysisSummary;
 import smartdeptest.analysis.APIUsageResult.Classification;
 import smartdeptest.analysis.APIUsageResult.DependencyImpact;
 import smartdeptest.analysis.APIUsageResult.UsageFinding;
@@ -32,11 +33,12 @@ import java.util.stream.Stream;
 final class BytecodeAPIUsageAnalyzer {
 
     private final MavenModuleClasspathResolver classpathResolver;
+    private final List<String> diagnostics = new ArrayList<>();
     private final ApplicationModuleScanner moduleScanner;
 
     BytecodeAPIUsageAnalyzer(MavenModuleClasspathResolver classpathResolver) {
         this.classpathResolver = classpathResolver;
-        this.moduleScanner = new ApplicationModuleScanner(classpathResolver);
+        this.moduleScanner = new ApplicationModuleScanner(classpathResolver, diagnostics);
     }
 
     APIUsageResult analyze(APIChangeResult apiChanges, Path projectDirectory) {
@@ -52,18 +54,19 @@ final class BytecodeAPIUsageAnalyzer {
                     .map(d -> buildImpact(d, index))
                     .toList();
 
-            return new APIUsageResult(
-                    apiChanges.projectPath(), impacts, index.applicationCalls());
+                return new APIUsageResult(apiChanges.projectPath(), impacts, index.applicationCalls(),
+                    index.summary(), diagnostics);
 
         } catch (Exception e) {
             String message = messageOf(e);
-            System.err.println("Application bytecode analysis failed: " + message);
+            addDiagnostic("Application bytecode analysis failed: " + message);
 
             List<DependencyImpact> impacts = apiChanges.dependencies().stream()
                     .map(d -> unavailableImpact(d, message))
                     .toList();
 
-            return new APIUsageResult(apiChanges.projectPath(), impacts);
+                return new APIUsageResult(apiChanges.projectPath(), impacts, List.of(),
+                    AnalysisSummary.empty(), diagnostics);
         }
     }
 
@@ -85,8 +88,11 @@ final class BytecodeAPIUsageAnalyzer {
         Set<ApplicationCall> applicationCalls = new LinkedHashSet<>();
 
         long started = System.nanoTime();
-        int totalClasses = 0;
-        int failedClasses = 0;
+        int classFilesDiscovered = 0;
+        int classFilesAnalyzed = 0;
+        int classFileFailures = 0;
+        int classDirectoryFailures = 0;
+        int duplicateClassFilesSkipped = 0;
 
         for (ApplicationModule module : modules) {
             String modulePath = module.moduleDirectory()
@@ -102,9 +108,8 @@ final class BytecodeAPIUsageAnalyzer {
                         ? List.of()
                         : classpathResolver.resolve(module);
             } catch (Exception e) {
-                System.err.printf(
-                        "WARNING: Could not resolve classpath for module %s: %s%n",
-                        module.moduleDirectory(), messageOf(e));
+                addDiagnostic("Could not resolve classpath for module "
+                    + module.moduleDirectory() + ": " + messageOf(e));
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
                 continue;
             }
@@ -112,7 +117,7 @@ final class BytecodeAPIUsageAnalyzer {
             Map<ApiReference, List<ImpactReference>> moduleReferences = moduleDependencies.isEmpty()
                     ? Map.of()
                     : referencesOnModuleClasspath(
-                            moduleDependencies, allReferences, classpath);
+                            moduleDependencies, allReferences, classpath, diagnostics);
 
             List<Path> classDirectories = module.classesDirectories().stream()
                     .filter(Files::isDirectory)
@@ -120,9 +125,8 @@ final class BytecodeAPIUsageAnalyzer {
 
             if (classDirectories.isEmpty()) {
                 if (!moduleReferences.isEmpty()) {
-                    System.err.printf(
-                            "WARNING: No compiled application classes for module %s%n",
-                            module.moduleDirectory());
+                        addDiagnostic("No compiled application classes for module "
+                            + module.moduleDirectory());
                     incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
                 }
                 continue;
@@ -142,23 +146,21 @@ final class BytecodeAPIUsageAnalyzer {
                     moduleReferences,
                     locations,
                     scannedClasses,
-                    new ClassHierarchy(hierarchyClasspath.stream().distinct().toList()),
+                    new ClassHierarchy(hierarchyClasspath.stream().distinct().toList(), diagnostics),
                     applicationMethods,
                     applicationCalls,
                     modulePath);
 
-            totalClasses += result.scanned();
-            failedClasses += result.failed();
+            classFilesDiscovered += result.discovered();
+            classFilesAnalyzed += result.analyzed();
+            classFileFailures += result.failed();
+            classDirectoryFailures += result.directoryFailures();
+            duplicateClassFilesSkipped += result.skipped();
 
             if (result.failed() > 0) {
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
             }
         }
-
-        System.out.printf(
-                "ASM scan completed: %d classes scanned, %d class failures, %d ms.%n",
-                totalClasses, failedClasses,
-                (System.nanoTime() - started) / 1_000_000);
 
         List<ApplicationCall> callsToApplicationMethods = applicationCalls.stream()
                 .filter(call -> applicationMethods.contains(new ApplicationMethod(
@@ -167,7 +169,11 @@ final class BytecodeAPIUsageAnalyzer {
                         call.targetMethodDescriptor())))
                 .toList();
 
-        return new UsageIndex(locations, callsToApplicationMethods, incompleteModules);
+        AnalysisSummary summary = new AnalysisSummary(
+            modules.size(), incompleteModules.size(), classFilesDiscovered,
+            classFilesAnalyzed, classFileFailures, classDirectoryFailures,
+            duplicateClassFilesSkipped);
+        return new UsageIndex(locations, callsToApplicationMethods, incompleteModules, summary);
     }
 
     private static boolean isDeclaredInModule(
@@ -267,18 +273,14 @@ final class BytecodeAPIUsageAnalyzer {
     private static Map<ApiReference, List<ImpactReference>> referencesOnModuleClasspath(
             List<DependencyApiResult> dependencies,
             Map<ApiReference, List<ImpactReference>> allReferences,
-            List<Path> classpath) {
+            List<Path> classpath,
+            List<String> diagnostics) {
 
         Set<DependencyApiResult> matched = new HashSet<>();
 
         for (DependencyApiResult dependency : dependencies) {
             if (dependencyPresentOnClasspath(dependency, classpath)) {
                 matched.add(dependency);
-                System.out.println(
-                        "[DEBUG] Dependency found on classpath: "
-                                + dependency.groupId() + ":"
-                                + dependency.artifactId() + ":"
-                                + dependency.newVersion());
             } else {
                 /*
                  * For a removed dependency there may be no new artifact on the
@@ -289,15 +291,12 @@ final class BytecodeAPIUsageAnalyzer {
                 if (oldArtifact != null && !oldArtifact.isBlank()
                         && Files.isRegularFile(Path.of(oldArtifact))) {
                     matched.add(dependency);
-                    System.out.printf(
-                            "Using old dependency artifact for API matching: %s%n",
-                            oldArtifact);
+                    String diagnostic = "Using the previous dependency artifact for API matching: "
+                            + oldArtifact;
+                    if (!diagnostics.contains(diagnostic)) {
+                        diagnostics.add(diagnostic);
+                    }
                 }
-                System.out.println(
-                        "[DEBUG] Dependency NOT found on classpath: "
-                                + dependency.groupId() + ":"
-                                + dependency.artifactId() + ":"
-                                + dependency.newVersion());
             }
         }
 
@@ -374,8 +373,11 @@ final class BytecodeAPIUsageAnalyzer {
             Set<ApplicationCall> applicationCalls,
             String modulePath) {
 
+        int discovered = 0;
         int scanned = 0;
         int failed = 0;
+        int directoryFailures = 0;
+        int skipped = 0;
 
         for (Path directory : module.classesDirectories()) {
             if (!Files.isDirectory(directory)) {
@@ -389,7 +391,9 @@ final class BytecodeAPIUsageAnalyzer {
                         .toList()) {
 
                     Path normalized = file.toAbsolutePath().normalize();
+                    discovered++;
                     if (!scannedClasses.add(normalized)) {
+                        skipped++;
                         continue;
                     }
 
@@ -402,20 +406,18 @@ final class BytecodeAPIUsageAnalyzer {
                         scanned++;
                     } catch (IOException | RuntimeException e) {
                         failed++;
-                        System.err.printf(
-                                "WARNING: Skipping unreadable class %s: %s%n",
-                                normalized, messageOf(e));
+                        addDiagnostic("Could not analyze class file " + normalized + ": "
+                                + messageOf(e));
                     }
                 }
             } catch (IOException e) {
-                failed++;
-                System.err.printf(
-                        "WARNING: Could not walk class directory %s: %s%n",
-                        directory, messageOf(e));
+                directoryFailures++;
+                addDiagnostic("Could not enumerate class directory " + directory + ": "
+                        + messageOf(e));
             }
         }
 
-        return new ScanResult(scanned, failed);
+        return new ScanResult(discovered, scanned, failed, directoryFailures, skipped);
     }
 
     private static DependencyImpact buildImpact(
@@ -519,6 +521,12 @@ final class BytecodeAPIUsageAnalyzer {
         return e.getMessage() == null
                 ? e.getClass().getSimpleName()
                 : e.getMessage();
+    }
+
+    private void addDiagnostic(String diagnostic) {
+        if (!diagnostics.contains(diagnostic)) {
+            diagnostics.add(diagnostic);
+        }
     }
 
     private static void record(
@@ -666,13 +674,15 @@ final class BytecodeAPIUsageAnalyzer {
             String className, String methodName, String descriptor) {
     }
 
-    private record ScanResult(int scanned, int failed) {
+    private record ScanResult(int discovered, int analyzed, int failed,
+                              int directoryFailures, int skipped) {
     }
 
     private record UsageIndex(
             Map<ImpactReference, Set<UsageLocation>> locations,
             List<ApplicationCall> applicationCalls,
-            Set<Path> incompleteModules) {
+            Set<Path> incompleteModules,
+            AnalysisSummary summary) {
     }
 
     private static final class UsageClassVisitor extends ClassVisitor {
@@ -855,11 +865,13 @@ final class BytecodeAPIUsageAnalyzer {
     private static final class ClassHierarchy {
 
         private final List<Path> classpath;
+        private final List<String> diagnostics;
         private final Map<String, ClassInfo> cache = new HashMap<>();
         private final Set<String> missing = new HashSet<>();
 
-        private ClassHierarchy(List<Path> classpath) {
+        private ClassHierarchy(List<Path> classpath, List<String> diagnostics) {
             this.classpath = classpath;
+            this.diagnostics = diagnostics;
         }
 
         private void recordInherited(
@@ -921,8 +933,8 @@ final class BytecodeAPIUsageAnalyzer {
                         cache.put(owner, info);
                         return info;
                     } catch (IOException | RuntimeException e) {
-                        System.err.printf("WARNING: Cannot read hierarchy class %s: %s%n",
-                                classFile, messageOf(e));
+                        addHierarchyDiagnostic("Cannot read hierarchy class "
+                            + classFile + ": " + messageOf(e));
                         continue;
                     }
                 }
@@ -942,13 +954,19 @@ final class BytecodeAPIUsageAnalyzer {
                         return info;
                     }
                 } catch (IOException | RuntimeException e) {
-                    System.err.printf("WARNING: Cannot inspect hierarchy archive %s: %s%n",
-                            normalized, messageOf(e));
+                        addHierarchyDiagnostic("Cannot inspect hierarchy archive "
+                            + normalized + ": " + messageOf(e));
                 }
             }
 
             missing.add(owner);
             return null;
+        }
+
+        private void addHierarchyDiagnostic(String diagnostic) {
+            if (!diagnostics.contains(diagnostic)) {
+                diagnostics.add(diagnostic);
+            }
         }
 
         private static ClassInfo readClassInfo(InputStream input) throws IOException {

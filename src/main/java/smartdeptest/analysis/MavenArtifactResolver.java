@@ -76,8 +76,6 @@ class MavenArtifactResolver {
                     List.of("mvn", "-f", projectPom.toString(),
                             "org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy",
                             "-Dartifact=" + artifactCoordinate, "-DoutputDirectory=" + destinationDirectory));
-            System.out.println("Resolved artifact: " + coordinate);
-            System.out.println("Copied JAR path: " + jar);
             if (!Files.isRegularFile(jar)) {
                 throw new IOException("Maven completed without producing the requested JAR at " + jar
                         + ". Maven output: " + output);

@@ -17,9 +17,15 @@ import java.util.Set;
 final class ApplicationModuleScanner {
 
     private final MavenModuleClasspathResolver outputResolver;
+    private final List<String> diagnostics;
 
     ApplicationModuleScanner(MavenModuleClasspathResolver outputResolver) {
+        this(outputResolver, new ArrayList<>());
+    }
+
+    ApplicationModuleScanner(MavenModuleClasspathResolver outputResolver, List<String> diagnostics) {
         this.outputResolver = outputResolver;
+        this.diagnostics = diagnostics;
     }
 
     List<ApplicationModule> discover(Path projectDirectory) throws IOException {
@@ -32,7 +38,7 @@ final class ApplicationModuleScanner {
 
         Map<Path, Path> discoveredPoms = discoverPoms(projectRoot);
         Set<Path> reactorDirectories = discoverReactorDirectories(
-                projectRoot, discoveredPoms);
+            projectRoot, discoveredPoms, diagnostics);
 
         List<ApplicationModule> modules = new ArrayList<>();
 
@@ -80,10 +86,8 @@ final class ApplicationModuleScanner {
                 Path conventionalOutput =
                         moduleDirectory.resolve("target/classes");
 
-                System.err.printf(
-                        "[WARN] Output discovery unavailable for module %s: %s%n",
-                        moduleDirectory,
-                        messageOf(exception));
+                diagnostics.add("Output discovery unavailable for module " + moduleDirectory
+                    + ": " + messageOf(exception));
 
                 if (Files.isDirectory(conventionalOutput)) {
                     classesDirectories = List.of(conventionalOutput);
@@ -123,10 +127,8 @@ final class ApplicationModuleScanner {
                 module -> module.moduleDirectory().toString()));
 
         if (modules.isEmpty()) {
-            System.err.printf(
-                    "[WARN] No application modules with source roots or compiled output "
-                            + "were discovered under %s.%n",
-                    projectRoot);
+                diagnostics.add("No application modules with source roots or compiled output were discovered under "
+                    + projectRoot + ".");
         }
 
         return List.copyOf(modules);
@@ -167,9 +169,10 @@ final class ApplicationModuleScanner {
         return poms;
     }
 
-    private static Set<Path> discoverReactorDirectories(
+            private static Set<Path> discoverReactorDirectories(
             Path projectRoot,
-            Map<Path, Path> discoveredPoms) {
+                Map<Path, Path> discoveredPoms,
+                List<String> diagnostics) throws IOException {
 
         Set<Path> reactor = new LinkedHashSet<>();
         Set<Path> visited = new LinkedHashSet<>();
@@ -186,12 +189,17 @@ final class ApplicationModuleScanner {
             return reactor;
         }
 
-        collectReactorModules(
-                projectRoot,
-                projectRoot,
-                discoveredPoms,
-                reactor,
-                visited);
+        if (readDeclaredModules(rootPom, diagnostics).isEmpty()) {
+            reactor.addAll(discoveredPoms.keySet());
+        } else {
+            collectReactorModules(
+                    projectRoot,
+                    projectRoot,
+                    discoveredPoms,
+                    reactor,
+                    visited,
+                    diagnostics);
+        }
 
         return reactor;
     }
@@ -201,7 +209,8 @@ final class ApplicationModuleScanner {
             Path moduleDirectory,
             Map<Path, Path> discoveredPoms,
             Set<Path> reactor,
-            Set<Path> visited) {
+            Set<Path> visited,
+            List<String> diagnostics) {
 
         Path normalizedDirectory =
                 moduleDirectory.toAbsolutePath().normalize();
@@ -220,24 +229,20 @@ final class ApplicationModuleScanner {
         reactor.add(normalizedDirectory);
 
         try {
-            for (String declaredModule : readDeclaredModules(pom)) {
+            for (String declaredModule : readDeclaredModules(pom, diagnostics)) {
                 Path childDirectory = normalizedDirectory
                         .resolve(declaredModule)
                         .normalize()
                         .toAbsolutePath();
 
                 if (!childDirectory.startsWith(projectRoot)) {
-                    System.err.printf(
-                            "[WARN] Maven module path is outside the project root "
-                                    + "and was not scanned: %s%n",
-                            childDirectory);
+                        diagnostics.add("Maven module path is outside the project root and was not scanned: "
+                            + childDirectory);
                     continue;
                 }
 
                 if (!discoveredPoms.containsKey(childDirectory)) {
-                    System.err.printf(
-                            "[WARN] Declared Maven module has no pom.xml: %s%n",
-                            childDirectory);
+                        diagnostics.add("Declared Maven module has no pom.xml: " + childDirectory);
                     continue;
                 }
 
@@ -246,17 +251,16 @@ final class ApplicationModuleScanner {
                         childDirectory,
                         discoveredPoms,
                         reactor,
-                        visited);
+                        visited,
+                        diagnostics);
             }
         } catch (IOException exception) {
-            System.err.printf(
-                    "[WARN] Could not read module declarations from %s: %s%n",
-                    pom,
-                    messageOf(exception));
+                diagnostics.add("Could not read module declarations from " + pom + ": "
+                    + messageOf(exception));
         }
     }
 
-    private static List<String> readDeclaredModules(Path pom)
+    private static List<String> readDeclaredModules(Path pom, List<String> diagnostics)
             throws IOException {
 
         /*
@@ -319,11 +323,8 @@ final class ApplicationModuleScanner {
                                 && !value.contains("${")) {
                             modules.add(value);
                         } else if (value.contains("${")) {
-                            System.err.printf(
-                                    "[WARN] Module path uses an unresolved Maven property "
-                                            + "in %s: %s%n",
-                                    pom,
-                                    value);
+                                diagnostics.add("Module path uses an unresolved Maven property in "
+                                    + pom + ": " + value);
                         }
                     }
                 }

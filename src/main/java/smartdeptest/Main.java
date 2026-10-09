@@ -67,21 +67,22 @@ public final class Main {
             Throwable cause = exception.getCause();
             (cause == null ? exception : cause).printStackTrace();
         } catch (Exception | LinkageError exception) {
-            System.out.println("ERROR: Unable to load SmartDepTest runtime dependencies. "
+            System.out.println("ERROR: Unable to load analysis runtime dependencies. "
                     + exception.getMessage());
         }
     }
 }
 
 final class SmartDepTestRunner {
+    private static final int PREVIEW_LIMIT = Math.max(
+            0, Integer.getInteger("analysis.console.preview.limit", 15));
+
     private SmartDepTestRunner() {}
 
     public static void main(String[] args) {
         System.out.println("============================================================");
-        System.out.println("SMARTDEPTEST");
-        System.out.println("COMPONENT 1 - DEPENDENCY CHANGE DETECTOR");
+        System.out.println("MAVEN DEPENDENCY IMPACT ANALYSIS");
         System.out.println("============================================================");
-        System.out.println();
         String input;
         if (args.length > 0) {
             input = args[0].trim();
@@ -93,26 +94,35 @@ final class SmartDepTestRunner {
                 || (input.startsWith("'") && input.endsWith("'")))) {
             input = input.substring(1, input.length() - 1);
         }
-        if (input.isBlank()) { System.out.println("ERROR: Project directory does not exist."); return; }
+        if (input.isBlank()) {
+            System.out.println("ERROR: Project directory is blank.");
+            return;
+        }
         Path project = Path.of(input);
-        if (!Files.isDirectory(project)) { System.out.println("ERROR: Project directory does not exist."); return; }
+        if (!Files.isDirectory(project)) {
+            System.out.println("ERROR: Project directory does not exist: " + project);
+            return;
+        }
         try {
             long dependencyStarted = System.nanoTime();
-            DependencyChangeResult result = new DependencyChangeDetector().detect(project);
+            DependencyChangeResult changes = new DependencyChangeDetector().detect(project);
             long dependencyNanos = System.nanoTime() - dependencyStarted;
-            printReport(result);
-            long apiImpactStarted = System.nanoTime();
-            APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(result);
+            printReport(changes);
+            long impactStarted = System.nanoTime();
+            APIChangeResult apiChanges = new APIChangeAnalyzer().analyze(changes);
             APIUsageResult usage = new APIUsageAnalyzer().analyze(apiChanges, project);
+            printApplicationScanReport(usage);
             printImpactReport(apiChanges, usage);
             DependencyGraphResult graph = new DependencyGraphBuilder().build(apiChanges, usage);
-            Path graphOutput = project.toAbsolutePath().normalize().resolve("target/smartdeptest-impact-graph.json");
+            Path graphOutput = project.toAbsolutePath().normalize()
+                    .resolve("target/smartdeptest-impact-graph.json");
             new DependencyGraphJsonExporter().write(graph, graphOutput);
             printCallGraphAndPropagation(graph, graphOutput);
             printCoverageAndRegressionSelection(graph, project);
-            System.out.printf("Dependency change detection time: %d ms.%n", dependencyNanos / 1_000_000);
-            System.out.printf("Total API impact analysis time: %d ms.%n",
-                (System.nanoTime() - apiImpactStarted) / 1_000_000);
+            printSection("Execution time");
+            printTable(List.of("Stage", "Elapsed time"), List.of(
+                    List.of("Dependency-change detection", formatDuration(dependencyNanos)),
+                    List.of("API impact analysis and reporting", formatDuration(System.nanoTime() - impactStarted))));
         } catch (Exception exception) {
             String message = exception.getMessage();
             if (message != null && message.contains("not a git repository")) {
@@ -124,28 +134,30 @@ final class SmartDepTestRunner {
                         + (message == null || message.isBlank() ? "" : ": " + message));
             }
         } catch (LinkageError error) {
-            System.out.println("ERROR: A runtime dependency could not be loaded. Run `mvn compile` first "
-                + "to stage the required dependencies. Details: " + error.getMessage());
+            System.out.println("ERROR: An analysis runtime dependency could not be loaded. "
+                    + "Run `mvn compile` first. Details: " + error.getMessage());
         }
     }
 
-    private static void printCallGraphAndPropagation(DependencyGraphResult result, Path graphOutput) {
-        long callEdges = result.graph().getEdges().stream().filter(edge -> edge.type().equals("CALLS")).count();
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("COMPONENT 6 - APPLICATION CALL GRAPH");
-        System.out.println("------------------------------------------------------------");
-        System.out.printf("Application method CALLS edges: %d%n", callEdges);
-        System.out.printf("Graph JSON: %s%n", graphOutput);
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("COMPONENT 7 - IMPACT PROPAGATION");
-        System.out.println("------------------------------------------------------------");
-        printMethodSet("Directly impacted methods", result, result.directlyImpactedMethods());
-        printMethodSet("Indirectly affected callers (not necessarily broken)", result,
-                result.indirectlyAffectedMethods());
-        printMethodSet("All affected methods", result, result.allAffectedMethods());
+    private static String formatDuration(long nanoseconds) {
+        return String.format(java.util.Locale.ROOT, "%.3f s", nanoseconds / 1_000_000_000.0);
     }
+
+    private static void printCallGraphAndPropagation(DependencyGraphResult result, Path graphOutput) {
+        long callEdges = result.graph().getEdges().stream()
+            .filter(edge -> edge.type().equals("CALLS")).count();
+        printSection("Application call graph");
+        printTable(List.of("Metric", "Count or path"), List.of(
+            List.of("Application call-graph edges", Long.toString(callEdges)),
+            List.of("Detailed graph JSON", graphOutput.toString())));
+        printSection("Impact propagation");
+        printMethodSet("Unique directly affected application methods", result,
+            result.directlyImpactedMethods());
+        printMethodSet("Unique indirectly affected callers", result,
+            result.indirectlyAffectedMethods());
+        printMethodSet("Unique final affected application methods", result,
+            result.allAffectedMethods());
+        }
 
     private static void printMethodSet(String label, DependencyGraphResult result, List<String> methodIds) {
         System.out.printf("%s: %d%n", label, methodIds.size());
@@ -153,10 +165,32 @@ final class SmartDepTestRunner {
             System.out.println("NONE");
             return;
         }
-        for (String methodId : methodIds) {
-            System.out.println("- " + displayMethod(result, methodId));
+        int displayed = Math.min(methodIds.size(), PREVIEW_LIMIT);
+        for (int index = 0; index < displayed; index++) {
+            System.out.println("- " + displayMethod(result, methodIds.get(index)));
+        }
+        if (methodIds.size() > displayed) {
+            System.out.println("... " + (methodIds.size() - displayed)
+                    + " additional application methods");
         }
     }
+
+        private static void printApplicationScanReport(APIUsageResult usage) {
+        APIUsageResult.AnalysisSummary summary = usage.analysisSummary();
+        printSection("Application bytecode analysis");
+        printTable(List.of("Metric", "Count"), List.of(
+            List.of("Maven application modules discovered", Integer.toString(summary.modulesDiscovered())),
+            List.of("Modules with incomplete analysis", Integer.toString(summary.modulesIncomplete())),
+            List.of("Class-file candidates discovered", Integer.toString(summary.classFilesDiscovered())),
+            List.of("Class files analyzed successfully", Integer.toString(summary.classFilesAnalyzed())),
+            List.of("Class files that failed analysis", Integer.toString(summary.classFileFailures())),
+            List.of("Class directories that could not be enumerated",
+                Integer.toString(summary.classDirectoryFailures())),
+            List.of("Duplicate class-file paths skipped", Integer.toString(summary.duplicateClassFilesSkipped()))));
+        printPreviewTable("Application analysis diagnostic preview", List.of("Diagnostic"),
+            usage.diagnostics().stream().map(diagnostic -> List.of(diagnostic)).toList(),
+            "application-analysis diagnostics");
+        }
 
     private static String displayMethod(DependencyGraphResult result, String methodId) {
         var method = result.graph().getNode(methodId);
@@ -169,30 +203,18 @@ final class SmartDepTestRunner {
 
     private static void printCoverageAndRegressionSelection(DependencyGraphResult result, Path project) {
         if (result.allAffectedMethods().isEmpty()) {
-            System.out.println();
-            System.out.println("------------------------------------------------------------");
-            System.out.println("COMPONENTS 8-10 - REGRESSION TEST IDENTIFICATION");
-            System.out.println("------------------------------------------------------------");
-            System.out.println("No affected methods available; coverage mapping and regression selection are skipped.");
+            printSection("Regression test identification");
+            printTable(List.of("Metric", "Value"), List.of(
+                    List.of("Affected application methods", "0"),
+                    List.of("Test-selection status", "Skipped"),
+                    List.of("Reason", "No affected application methods were available.")));
             return;
         }
 
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("COMPONENTS 8-10 - REGRESSION TEST IDENTIFICATION");
-        System.out.println("------------------------------------------------------------");
+        printSection("Regression test identification");
         try {
             JacocoMethodTestMapper mapper = new JacocoMethodTestMapper();
             JacocoMethodTestMapper.CoverageResult coverage = mapper.map(project, result);
-            if (!coverage.failures().isEmpty()) {
-                for (String failure : coverage.failures()) {
-                    System.out.println("Test identification note: " + failure);
-                }
-            }
-            if (!coverage.selectionNote().isBlank()) {
-                System.out.println("Test evidence diagnostic: "
-                        + coverage.selectionNote());
-            }
             int methodsWithTests = (int) coverage.groupedSelectedTests().stream()
                     .filter(group -> !group.selectedTests().isEmpty()).count();
             int methodsWithoutTests = (int) coverage.groupedSelectedTests().stream()
@@ -201,34 +223,34 @@ final class SmartDepTestRunner {
                     .filter(group -> group.selectionStatus().equals("NOT ANALYZED")).count();
             boolean staticEvidence = coverage.selectionNote()
                     .contains("statically traceable test-bytecode call paths");
-            System.out.println("Total affected application methods: " + result.allAffectedMethods().size());
-            System.out.println((staticEvidence
-                    ? "Affected methods with statically mapped tests: "
-                    : "Affected methods with covering tests: ") + methodsWithTests);
-            System.out.println((staticEvidence
-                    ? "Affected methods with no statically traceable test path: "
-                    : "Affected methods with no covering tests: ") + methodsWithoutTests);
-            if (methodsNotAnalyzed > 0) {
-                System.out.println("Affected methods not analyzed: " + methodsNotAnalyzed);
-            }
-            System.out.println("Unique selected regression tests: " + coverage.selectedTests().size());
-            System.out.println();
-            System.out.println("GROUPED AFFECTED METHOD -> TEST CASES");
-            for (DependencyGraphResult.AffectedMethodTestGroup group : coverage.groupedSelectedTests()) {
-                System.out.printf("%s [%s]%n",
-                        displayMethod(result, group.affectedMethod()),
-                        group.impactType());
-                System.out.println("Affected Test Cases:");
-                if (group.selectedTests().isEmpty()) {
-                    System.out.println(group.selectionStatus().equals("NOT ANALYZED")
-                            ? "- NOT ANALYZED: " + group.selectionNote()
-                            : "- NONE FOUND");
-                } else {
-                    for (String test : group.selectedTests()) {
-                        System.out.println("- " + test);
-                    }
+                printTable(List.of("Metric", "Count"), List.of(
+                    List.of("Unique affected application methods", Integer.toString(result.allAffectedMethods().size())),
+                    List.of("Affected methods with selected tests", Integer.toString(methodsWithTests)),
+                    List.of(staticEvidence
+                            ? "Affected methods without a statically traceable test path"
+                            : "Affected methods without selected tests",
+                        Integer.toString(methodsWithoutTests)),
+                    List.of("Affected methods not analyzed", Integer.toString(methodsNotAnalyzed)),
+                    List.of("Unique selected regression test cases", Integer.toString(coverage.selectedTests().size())),
+                    List.of("Test-identification diagnostics", Integer.toString(coverage.failures().size()))));
+                if (!coverage.selectionNote().isBlank()) {
+                System.out.println("Evidence: " + coverage.selectionNote());
                 }
-            }
+                printPreviewTable("Affected-method test-group preview",
+                    List.of("Affected application method", "Impact", "Selection status", "Selected test cases"),
+                    coverage.groupedSelectedTests().stream()
+                        .map(group -> List.of(
+                            displayMethod(result, group.affectedMethod()),
+                            group.impactType(), group.selectionStatus(),
+                            Integer.toString(group.selectedTests().size())))
+                        .toList(),
+                    "affected-method test groups");
+                printPreviewTable("Selected regression test preview", List.of("Test case"),
+                    coverage.selectedTests().stream().map(test -> List.of(test)).toList(),
+                    "unique selected test cases");
+                printPreviewTable("Test-identification diagnostic preview", List.of("Diagnostic"),
+                    coverage.failures().stream().map(failure -> List.of(failure)).toList(),
+                    "test-identification diagnostics");
             DependencyGraphResult enriched = new DependencyGraphResult(
                     result.graph(),
                     result.affectedNodes(),
@@ -239,7 +261,9 @@ final class SmartDepTestRunner {
                     coverage.methodTestCoverage(),
                     coverage.selectedTests(),
                     coverage.groupedSelectedTests(),
-                    List.of());
+                    coverage.testCoverageStatuses(),
+                    result.analysisSummary(),
+                    result.analysisDiagnostics());
             Path coverageOutput = project.toAbsolutePath().normalize().resolve("target/smartdeptest-coverage-selection.json");
             new DependencyGraphJsonExporter().write(enriched, coverageOutput);
             System.out.println("Coverage JSON: " + coverageOutput);
@@ -252,56 +276,113 @@ final class SmartDepTestRunner {
     }
 
     private static void printReport(DependencyChangeResult result) {
-        System.out.println();
-        System.out.println("Project: " + result.getProjectPath());
-        System.out.println("Git Repository: Detected");
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("GIT ANALYSIS");
-        System.out.println("------------------------------------------------------------");
-        System.out.println("Dependency-changing commit: " + result.getCommitId());
-        System.out.println("Previous commit: " + result.getPreviousCommitId());
-        System.out.println("Commit message: " + result.getCommitMessage());
-        System.out.println();
-        System.out.println("POM files containing changes:");
-        result.getChangedPomFiles().forEach(path -> System.out.println("- " + path));
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("DEPENDENCY CHANGES");
-        System.out.println("------------------------------------------------------------");
-        for (DependencyChange change : result.getChanges()) {
-            System.out.println();
-            System.out.println("[" + change.getChangeType() + "]");
-            System.out.println("Dependency: " + change.getDependencyKey());
-            System.out.println("POM: " + change.getPomPath());
-            if (!change.getOldVersion().isEmpty()) System.out.println("Previous Version: " + change.getOldVersion());
-            if (!change.getNewVersion().isEmpty()) System.out.println("New Version: " + change.getNewVersion());
-            if (change.getChangeType() == DependencyChange.Type.SCOPE_CHANGED) {
-                System.out.println("Previous Scope: " + change.getOldScope());
-                System.out.println("New Scope: " + change.getNewScope());
-            }
-        }
+        printSection("Dependency change detection");
+        printTable(List.of("Metric", "Value"), List.of(
+                List.of("Project directory", result.getProjectPath()),
+                List.of("Git repository", "Available"),
+                List.of("Dependency-changing commit", result.getCommitId()),
+                List.of("Previous commit", result.getPreviousCommitId()),
+                List.of("Commit message", result.getCommitMessage())));
+
         Map<DependencyChange.Type, Long> counts = new EnumMap<>(DependencyChange.Type.class);
         result.getChanges().forEach(change -> counts.merge(change.getChangeType(), 1L, Long::sum));
-        System.out.println();
-        System.out.println("------------------------------------------------------------");
-        System.out.println("SUMMARY");
-        System.out.println("------------------------------------------------------------");
-        System.out.println("Changed POM files: " + result.getChangedPomFiles().size());
-        Set<String> changedDependencies = new LinkedHashSet<>();
-        result.getChanges().forEach(change -> changedDependencies.add(change.getDependencyKey()));
-        System.out.println("Changed dependencies: " + String.join(", ", changedDependencies));
-        System.out.println("Added dependencies: " + counts.getOrDefault(DependencyChange.Type.ADDED, 0L));
-        System.out.println("Removed dependencies: " + counts.getOrDefault(DependencyChange.Type.REMOVED, 0L));
-        System.out.println("Updated dependencies: " + counts.getOrDefault(DependencyChange.Type.UPDATED, 0L));
-        long other = result.getChanges().stream().filter(change -> change.getChangeType() != DependencyChange.Type.ADDED
-                && change.getChangeType() != DependencyChange.Type.REMOVED && change.getChangeType() != DependencyChange.Type.UPDATED).count();
-        System.out.println("Other dependency changes: " + other);
-        System.out.println();
-        System.out.println("Dependency Change Detection Completed");
+        Set<String> dependencyIdentities = new LinkedHashSet<>();
+        result.getChanges().forEach(change -> dependencyIdentities.add(change.getDependencyKey()));
+        List<List<String>> summary = new ArrayList<>();
+        summary.add(List.of("POM paths with dependency changes", Integer.toString(result.getChangedPomFiles().size())));
+        summary.add(List.of("Dependency-change records", Integer.toString(result.getChanges().size())));
+        summary.add(List.of("Unique dependency identities (group:artifact)",
+                Integer.toString(dependencyIdentities.size())));
+        for (DependencyChange.Type type : DependencyChange.Type.values()) {
+            summary.add(List.of(type + " dependency-change records",
+                    Long.toString(counts.getOrDefault(type, 0L))));
+        }
+        printSection("Dependency-change summary");
+        printTable(List.of("Metric", "Count"), summary);
+
+        List<List<String>> pomRows = result.getChangedPomFiles().stream()
+                .map(path -> List.of(path)).toList();
+        printPreviewTable("POM paths with dependency changes", List.of("POM path"), pomRows,
+                "POM-path records");
+
+        List<List<String>> changeRows = result.getChanges().stream()
+                .map(change -> List.of(
+                        change.getChangeType().name(),
+                        change.getDependencyKey(),
+                        versionTransition(change),
+                        change.getPomPath()))
+                .toList();
+        printPreviewTable("Dependency-change records",
+                List.of("Change type", "Dependency", "Version transition", "POM path"),
+                changeRows, "dependency-change records");
+        System.out.println("Dependency change detection completed.");
     }
 
-    private static void printImpactReport(APIChangeResult apiChanges, APIUsageResult usage) {
+    private static String versionTransition(DependencyChange change) {
+        String oldVersion = change.getOldVersion().isBlank() ? "(none)" : change.getOldVersion();
+        String newVersion = change.getNewVersion().isBlank() ? "(none)" : change.getNewVersion();
+        if (change.getChangeType() == DependencyChange.Type.SCOPE_CHANGED) {
+            return change.getOldScope() + " -> " + change.getNewScope();
+        }
+        return oldVersion + " -> " + newVersion;
+    }
+
+    private static void printSection(String title) {
+        System.out.println();
+        System.out.println("============================================================");
+        System.out.println(title.toUpperCase(java.util.Locale.ROOT));
+        System.out.println("============================================================");
+    }
+
+    private static void printPreviewTable(String title, List<String> headers,
+                                          List<List<String>> rows, String entityName) {
+        printSection(title);
+        int displayed = Math.min(rows.size(), PREVIEW_LIMIT);
+        System.out.printf("Showing %d of %d %s.%n", displayed, rows.size(), entityName);
+        printTable(headers, rows.subList(0, displayed));
+        if (rows.size() > displayed) {
+            System.out.printf("... %d additional %s.%n", rows.size() - displayed, entityName);
+        }
+    }
+
+    private static void printTable(List<String> headers, List<List<String>> rows) {
+        int[] widths = new int[headers.size()];
+        for (int column = 0; column < headers.size(); column++) {
+            widths[column] = Math.min(52, headers.get(column).length());
+            for (List<String> row : rows) {
+                if (column < row.size()) {
+                    widths[column] = Math.min(52,
+                            Math.max(widths[column], oneLine(row.get(column)).length()));
+                }
+            }
+        }
+        StringBuilder border = new StringBuilder("+");
+        for (int width : widths) {
+            border.append("-".repeat(width + 2)).append('+');
+        }
+        System.out.println(border);
+        printTableRow(headers, widths);
+        System.out.println(border);
+        for (List<String> row : rows) {
+            printTableRow(row, widths);
+        }
+        System.out.println(border);
+    }
+
+    private static void printTableRow(List<String> values, int[] widths) {
+        StringBuilder row = new StringBuilder("|");
+        for (int column = 0; column < widths.length; column++) {
+            String value = column < values.size() ? oneLine(values.get(column)) : "";
+            row.append(' ').append(tableCell(value, widths[column])).append(" |");
+        }
+        System.out.println(row);
+    }
+
+    private static String oneLine(String value) {
+        return value == null ? "" : value.replace('\r', ' ').replace('\n', ' ');
+    }
+
+    static void printImpactReport(APIChangeResult apiChanges, APIUsageResult usage) {
         System.out.println();
         System.out.println("------------------------------------------------------------");
         System.out.println("DEPENDENCY API IMPACT");
@@ -327,9 +408,12 @@ final class SmartDepTestRunner {
                     .filter(change -> change.kind().name().endsWith("_REMOVED")).count();
             long modified = dependency.changes().stream()
                     .filter(change -> change.kind().name().endsWith("_MODIFIED")).count();
-                System.out.println("Dependency API diff: " + dependency.changes().size() + " changes (added " + added
-                    + ", removed " + removed + ", modified " + modified + ")");
-                System.out.println("Note: This count is the library-wide diff, not the number of impacted application methods.");
+                    printTable(List.of("Library API-diff metric", "Count"), List.of(
+                        List.of("API-diff records", Integer.toString(dependency.changes().size())),
+                        List.of("Added API-diff records", Long.toString(added)),
+                        List.of("Removed API-diff records", Long.toString(removed)),
+                        List.of("Modified API-diff records", Long.toString(modified))));
+                    System.out.println("API-diff counts describe library members, not application usages.");
             if (!dependency.message().isBlank()) {
                 System.out.println("Analysis note: " + conciseReason(dependency.message()));
             }
@@ -359,8 +443,8 @@ final class SmartDepTestRunner {
                     if (change.memberName().isBlank() && memberUsages.contains(usageKey(change.className(), location))) {
                         continue;
                     }
-                    impactRows.add(new ImpactRow(renderApiChange(change),
-                            simpleClassName(location.className()) + "."
+                        impactRows.add(new ImpactRow(renderApiChange(change),
+                            location.className().replace('/', '.') + "."
                                     + location.methodName() + location.methodDescriptor(),
                             location.instructionType()));
                 }
@@ -370,15 +454,17 @@ final class SmartDepTestRunner {
                             .thenComparing(ImpactRow::changedApi)
                             .thenComparing(ImpactRow::instructionType))
                     .toList();
-                    long impactedMethodCount = sortedRows.stream().map(ImpactRow::applicationMethod).distinct().count();
-                    System.out.println("Impacted application methods: " + impactedMethodCount
-                        + " (" + sortedRows.size() + " API references)");
+                    long impactedMethodCount = sortedRows.stream()
+                        .map(ImpactRow::applicationMethod).distinct().count();
+                    System.out.println("Unique affected application methods: " + impactedMethodCount);
+                    System.out.println("Unique API-impact records: " + sortedRows.size()
+                        + " (deduplicated by changed API, application method, and instruction type)");
             if (sortedRows.isEmpty()) {
                 System.out.println("NONE");
             } else {
                 System.out.println("#   | Changed API member (descriptor)                  | Application method                              | Instruction");
                 System.out.println("----+---------------------------------------------------+--------------------------------------------------+------------------");
-                int displayed = Math.min(sortedRows.size(), 15);
+                int displayed = Math.min(sortedRows.size(), PREVIEW_LIMIT);
                 for (int index = 0; index < displayed; index++) {
                     ImpactRow row = sortedRows.get(index);
                     System.out.printf("%3d | %-49s | %-48s | %s%n", index + 1,
@@ -386,7 +472,8 @@ final class SmartDepTestRunner {
                             row.instructionType());
                 }
                 if (sortedRows.size() > displayed) {
-                    System.out.println("... and " + (sortedRows.size() - displayed) + " more impacted method(s).");
+                        System.out.println("... " + (sortedRows.size() - displayed)
+                            + " additional API-impact records");
                 }
             }
         }

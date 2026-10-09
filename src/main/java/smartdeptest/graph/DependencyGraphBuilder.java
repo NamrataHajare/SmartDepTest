@@ -145,7 +145,13 @@ public final class DependencyGraphBuilder {
                         impactPaths,
                         List.copyOf(directlyImpactedMethods),
                         List.of(),
-                        List.of());
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        usage.analysisSummary(),
+                        usage.diagnostics());
 
         return new ImpactPropagator().propagate(directResult);
     }

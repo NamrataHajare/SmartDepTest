@@ -133,8 +133,6 @@ public final class APIChangeAnalyzer {
                     ? emptyJar
                     : newArtifact.jar();
 
-            long started = System.nanoTime();
-
             List<ApiChange> changes;
             String comparisonMessage = "";
 
@@ -154,20 +152,6 @@ public final class APIChangeAnalyzer {
                 comparisonMessage = "JApiCmp ignored unresolved transitive class references: "
                         + detail;
             }
-            System.out.println("\n[DEBUG] Actual API changes:");
-
-            for (ApiChange change1 : changes) {
-                System.out.println(
-                        "Kind: " + change1.kind()
-                                + " | Class: " + change1.className()
-                                + " | Member: " + change1.memberName()
-                                + " | Old signature: " + change1.oldSignature()
-                                + " | New signature: " + change1.newSignature()
-                                + " | Old descriptor: " + change1.oldDescriptor()
-                                + " | New descriptor: " + change1.newDescriptor()
-                                + " | Potentially incompatible: " + change1.potentiallyIncompatible());
-            }
-
             if (!hasOldVersion) {
                 comparisonMessage = appendMessage(
                         comparisonMessage,
@@ -177,11 +161,6 @@ public final class APIChangeAnalyzer {
                         comparisonMessage,
                         "Removed dependency: API compared against an empty target.");
             }
-
-            System.out.printf(
-                    "JApiCmp analysis for %s:%s completed in %d ms.%n",
-                    change.getGroupId(), change.getArtifactId(),
-                    (System.nanoTime() - started) / 1_000_000);
 
             return new DependencyApiResult(
                     change.getGroupId(), change.getArtifactId(),
