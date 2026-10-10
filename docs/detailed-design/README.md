@@ -1,6 +1,6 @@
 # Detailed Design: Dependency-to-Impact Evidence
 
-This guide follows the evidence chain from committed dependency detection through JApiCmp comparison and ASM bytecode usage analysis. The final label is static-analysis evidence, not a prediction that the application will crash.
+This guide follows the evidence chain from committed dependency detection through ASM class-file comparison and ASM bytecode usage analysis. The final label is static-analysis evidence, not a prediction that the application will crash.
 
 ## The process at a glance
 
@@ -120,11 +120,11 @@ One dependency can produce multiple change entries if multiple fields changed. I
 
 Because resolution runs against the target project's POM, Maven uses repositories declared in that POM, repositories inherited from resolvable parents, the user's `settings.xml`, configured mirrors, and Maven's configured local repository/cache. Maven itself decides which configured source supplies the artifact. Normal Maven runs do not force remote updates; if Maven explicitly reports a cached missing-artifact result, SmartDepTest retries that command once with `-U`. The target project's POM and source files are not changed. If coordinates are unresolved, Maven cannot resolve an artifact, or the artifact is not a JAR dependency, the API result is `UNAVAILABLE`; it is not treated as an empty API or “no impact.” The Maven error is retained in the analysis reason.
 
-When the old and new versions are identical, JAR comparison is skipped. Additions/removals without both versions are marked unavailable because Component 1 has no old/new pair to compare.
+When the old and new versions are identical, JAR comparison is skipped. For an added or removed dependency, the available artifact is compared against an empty JAR to report its API surface.
 
-## Step 9: Compare dependency APIs with JApiCmp
+## Step 9: Compare dependency APIs with ASM
 
-`JApiCmpApiComparator` compares only the old and new dependency JARs. It includes public and protected classes, methods, constructors, and fields and maps JApiCmp statuses to normalized `ApiChange` values. Class owners use JVM internal names such as `org/example/Service`. Methods and constructors retain old and new JVM descriptors, including return types; fields retain their old and new descriptors. An unambiguous same-owner/name method remove/add pair is represented as a modified signature while preserving both descriptors. Removed APIs retain their old descriptor for matching application bytecode that still links to them.
+`AsmApiComparator` reads old and new JAR entries directly with ASM `ClassReader` and visitors. It includes public and protected classes, methods, constructors, and fields without loading dependency classes or requiring their transitive dependencies. Class owners use JVM internal names such as `org/example/Service`. Methods and constructors retain old and new JVM descriptors, including return types; fields retain their old and new descriptors. An unambiguous same-owner/name method remove/add pair is represented as a modified signature while preserving both descriptors. Removed APIs retain their old descriptor for matching application bytecode that still links to them. Invalid archives or unreadable class files make the dependency result `UNAVAILABLE`; they are not converted into an empty successful comparison.
 
 Each dependency result is `ANALYZED` with zero or more changes, or `UNAVAILABLE` with a reason. The result retains dependency coordinates, versions, scope/type/classifier, POM origin, and whether the declaration came from `dependencyManagement`.
 

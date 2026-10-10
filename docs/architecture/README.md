@@ -29,7 +29,7 @@ Main.java: prints the existing Component 1 report
 APIChangeAnalyzer.java: resolves old/new JARs
           |
           v
-JApiCmpApiComparator.java: compares dependency APIs and normalizes JVM descriptors
+AsmApiComparator.java: compares dependency class files and normalizes JVM descriptors
           |
           v
 APIChangeResult.java
@@ -147,7 +147,7 @@ Stores the full result: project path, selected commit and parent, commit message
 
 - `analyze()` groups Component 1 changes by artifact/version/declaration and obtains old/new JARs.
 - `MavenArtifactResolver` invokes Maven from the target project directory with the POM path containing the changed dependency. Maven applies target-POM repositories, parent inheritance, user settings, mirrors, and its configured local repository; resolved JARs are copied into temporary analysis storage.
-- `JApiCmpApiComparator` compares only the dependency JARs. It emits changed classes, methods, constructors, and fields as normalized `ApiChange` values with owner internal names and old/new JVM descriptors.
+- `AsmApiComparator` reads only the dependency JARs with ASM visitors, without loading dependency classes or resolving their transitive dependencies. It emits changed classes, methods, constructors, and fields as normalized `ApiChange` values with owner internal names and old/new JVM descriptors.
 - Results are `ANALYZED` or `UNAVAILABLE`; failure to resolve an artifact is not reported as “no API changes.”
 
 **`src/main/java/smartdeptest/analysis/APIUsageAnalyzer.java`**
@@ -161,9 +161,9 @@ Stores the full result: project path, selected commit and parent, commit message
 
 ### Dependency/impact graph and affected code
 
-**`src/main/java/smartdeptest/graph/DependencyGraphBuilder.java`** consumes `APIChangeResult` and `APIUsageResult`; it does not scan Maven files or bytecode. It creates dependency nodes from the JApiCmp result metadata, API nodes from `ApiChange`, and application class/method nodes only for `used` ASM findings.
+**`src/main/java/smartdeptest/graph/DependencyGraphBuilder.java`** consumes `APIChangeResult` and `APIUsageResult`; it does not scan Maven files or bytecode. It creates dependency nodes from the API comparison result metadata, API nodes from `ApiChange`, and application class/method nodes only for `used` ASM findings.
 
-- Dependency-to-API `PROVIDES` edges come from JApiCmp changes.
+- Dependency-to-API `PROVIDES` edges come from ASM API changes.
 - Class-to-API `USES` and method-to-API `USES` edges come from ASM usage locations. Application invocation instructions create method-to-method `CALLS` edges only when the target method is present in the discovered application bytecode. Class-to-method `CONTAINS` edges preserve the owner relationship.
 - Direct `ImpactPath` values preserve the dependency, API, application class, and (when the finding identifies one) application method IDs and instruction type.
 - No application-to-application call graph is currently produced, so propagation intentionally stops at directly using code. Transitive dependency status is `NOT_ANALYZED`; the existing detector compares declared POM entries and dependency-management declarations, not Maven's resolved transitive graph.
@@ -185,7 +185,7 @@ Stores the full result: project path, selected commit and parent, commit message
 | What counts as a dependency change | `DependencyComparator` and `DependencyChange.Type` |
 | What the command prints | `Main.printReport()` |
 | What information a result stores | `Dependency`, `DependencyChange`, or `DependencyChangeResult` |
-| How dependency JAR APIs are compared | `analysis/APIChangeAnalyzer` and `analysis/JApiCmpApiComparator` |
+| How dependency JAR APIs are compared | `analysis/APIChangeAnalyzer` and `analysis/AsmApiComparator` |
 | How actual application usage is found | `analysis/BytecodeAPIUsageAnalyzer` and `analysis/MavenModuleClasspathResolver` |
 | How affected classes/methods are represented and exported | `graph/DependencyGraphBuilder` and `graph/DependencyGraphJsonExporter` |
 

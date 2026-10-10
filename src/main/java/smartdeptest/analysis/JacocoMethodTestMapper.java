@@ -123,11 +123,10 @@ public final class JacocoMethodTestMapper {
                 new LinkedHashSet<>(affectedMethods),
                 testsByAffectedMethod,
                 failures);
+        boolean fixtureTestsFound = testsByAffectedMethod.values()
+                .stream().anyMatch(tests -> !tests.isEmpty());
 
         if (affectedModules.isEmpty()) {
-            boolean fixtureTestsFound = testsByAffectedMethod.values()
-                    .stream().anyMatch(tests -> !tests.isEmpty());
-
             if (fixtureTestsFound) {
                 return buildCoverageResult(
                         affectedMethods,
@@ -192,7 +191,7 @@ public final class JacocoMethodTestMapper {
             }
         }
 
-        if (testBytecodeReady && testEntryPoints.isEmpty()) {
+        if (testBytecodeReady && testEntryPoints.isEmpty() && !fixtureTestsFound) {
             String reason = "No supported test entry points were found in compiled test bytecode. "
                     + evidenceNote;
             failures.add(reason);

@@ -16,7 +16,7 @@ import java.util.jar.Manifest;
 
 public final class APIChangeAnalyzer {
     private final MavenArtifactResolver artifactResolver;
-    private final JApiCmpApiComparator apiComparator = new JApiCmpApiComparator();
+    private final AsmApiComparator apiComparator = new AsmApiComparator();
 
     public APIChangeAnalyzer() {
         this(new MavenArtifactResolver());
@@ -48,13 +48,12 @@ public final class APIChangeAnalyzer {
         }
 
         List<DependencyApiResult> results = new ArrayList<>();
-
         for (DependencyChange change : uniqueChanges.values()) {
             try {
                 results.add(analyzeDependency(change, projectDirectory));
             } catch (RuntimeException exception) {
-                results.add(unavailable(change, null, null,
-                        messageOf(exception)));
+                results.add(unavailable(
+                        change, null, null, messageOf(exception)));
             }
         }
 
@@ -63,7 +62,8 @@ public final class APIChangeAnalyzer {
     }
 
     private DependencyApiResult analyzeDependency(
-            DependencyChange change, Path projectDirectory) {
+            DependencyChange change,
+            Path projectDirectory) {
 
         String oldVersion = normalizeVersion(change.getOldVersion());
         String newVersion = normalizeVersion(change.getNewVersion());
@@ -85,7 +85,9 @@ public final class APIChangeAnalyzer {
         }
 
         if (hasOldVersion && hasNewVersion
-                && oldVersion.equals(newVersion)) {
+                && oldVersion.equals(newVersion)
+                && normalizeClassifier(change.getOldClassifier())
+                        .equals(normalizeClassifier(change.getNewClassifier()))) {
             return new DependencyApiResult(
                     change.getGroupId(), change.getArtifactId(),
                     oldVersion, newVersion,
@@ -118,40 +120,19 @@ public final class APIChangeAnalyzer {
                         newVersion, change.getNewClassifier());
             }
 
-            /*
-             * A dependency addition has no old JAR.
-             * A dependency removal has no new JAR.
-             * Compare the available side against an empty JAR so JApiCmp
-             * can report one-sided API additions or removals.
-             */
             emptyJar = createEmptyJar();
 
             Path oldJar = oldArtifact == null
                     ? emptyJar
                     : oldArtifact.jar();
+
             Path newJar = newArtifact == null
                     ? emptyJar
                     : newArtifact.jar();
 
-            List<ApiChange> changes;
+            List<ApiChange> changes = apiComparator.compare(oldJar, newJar);
             String comparisonMessage = "";
 
-            try {
-                changes = apiComparator.compare(
-                        oldJar, newJar, List.of(), List.of(), false);
-            } catch (RuntimeException strictFailure) {
-                String detail = strictFailure.getMessage();
-
-                if (!isMissingClasspathFailure(detail)) {
-                    throw strictFailure;
-                }
-
-                changes = apiComparator.compare(
-                        oldJar, newJar, List.of(), List.of(), true);
-
-                comparisonMessage = "JApiCmp ignored unresolved transitive class references: "
-                        + detail;
-            }
             if (!hasOldVersion) {
                 comparisonMessage = appendMessage(
                         comparisonMessage,
@@ -177,6 +158,13 @@ public final class APIChangeAnalyzer {
                     comparisonMessage, changes);
 
         } catch (IOException | RuntimeException exception) {
+            System.err.println();
+            System.err.println("========== FULL API ANALYSIS ERROR ==========");
+            System.err.println("Dependency: " + change.getGroupId() + ":"
+                    + change.getArtifactId() + " "
+                    + oldVersion + " -> " + newVersion);
+            exception.printStackTrace(System.err);
+            System.err.println("========== END API ANALYSIS ERROR ==========");
             return unavailable(change, oldArtifact, newArtifact,
                     messageOf(exception));
         } finally {
@@ -203,7 +191,6 @@ public final class APIChangeAnalyzer {
 
             try (JarOutputStream ignored = new JarOutputStream(
                     Files.newOutputStream(jar), manifest)) {
-                // An empty JAR is the baseline/target for one-sided comparison.
             }
 
             return jar;
@@ -213,16 +200,12 @@ public final class APIChangeAnalyzer {
         }
     }
 
-    private static boolean isMissingClasspathFailure(String detail) {
-        return detail != null
-                && (detail.contains("Class not found:")
-                        || detail.contains("Could not load")
-                        || detail.contains(
-                                "Please make sure that all libraries have been added to the classpath"));
-    }
-
     private static String normalizeVersion(String version) {
         return version == null ? "" : version.trim();
+    }
+
+    private static String normalizeClassifier(String classifier) {
+        return classifier == null ? "" : classifier.trim();
     }
 
     private static boolean hasVersion(String version) {

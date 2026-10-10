@@ -3,15 +3,17 @@ package smartdeptest.analysis;
 import java.util.List;
 
 public record DependencyApiResult(String groupId, String artifactId,
-                                  String oldVersion, String newVersion,
-                                  String oldClassifier, String newClassifier,
-                                  String oldScope, String newScope, String oldType, String newType,
-                                  boolean dependencyManagement,
-                                  String pomPath, String oldArtifactPath, String newArtifactPath,
-                                  String oldResolutionSource, String newResolutionSource,
-                                  Status status, String message,
-                                  List<ApiChange> changes) {
-    public enum Status { ANALYZED, UNAVAILABLE }
+        String oldVersion, String newVersion,
+        String oldClassifier, String newClassifier,
+        String oldScope, String newScope, String oldType, String newType,
+        boolean dependencyManagement,
+        String pomPath, String oldArtifactPath, String newArtifactPath,
+        String oldResolutionSource, String newResolutionSource,
+        Status status, String message,
+        List<ApiChange> changes) {
+    public enum Status {
+        ANALYZED, UNAVAILABLE
+    }
 
     public DependencyApiResult {
         changes = List.copyOf(changes);
@@ -27,6 +29,11 @@ public record DependencyApiResult(String groupId, String artifactId,
         newArtifactPath = newArtifactPath == null ? "" : newArtifactPath;
         oldResolutionSource = oldResolutionSource == null ? "" : oldResolutionSource;
         newResolutionSource = newResolutionSource == null ? "" : newResolutionSource;
+    }
+
+    /** Retained for downstream compatibility; ASM comparisons are complete or unavailable. */
+    public boolean comparisonIncomplete() {
+        return false;
     }
 
     public String dependencyKey() {

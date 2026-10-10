@@ -236,6 +236,8 @@ class JacocoMethodTestMapperTest {
                 "sample/ReportMojo", "sample/ReportBase");
         writeClass(project.resolve("target/classes/sample/ReportBase.class"),
                 "sample/ReportBase", "java/lang/Object");
+        writeClass(project.resolve("target/classes/sample/Target.class"),
+                "sample/Target", "java/lang/Object");
 
         String reportMethod = methodId("sample.ReportBase", "executeReport", "()V");
         String affectedMethod = methodId("sample.Target", "changed", "()V");
@@ -249,11 +251,16 @@ class JacocoMethodTestMapperTest {
         JacocoMethodTestMapper.CoverageResult coverage =
                 new JacocoMethodTestMapper().map(project, impact);
 
+        assertFalse(Files.exists(project.resolve("target/test-classes")));
+        assertTrue(coverage.failures().isEmpty());
         assertEquals(List.of("src/it/report-fixture#report"),
                 coverage.groupedSelectedTests().get(0).selectedTests());
         assertEquals(List.of("src/it/report-fixture#report"), coverage.selectedTests());
         assertEquals("DIRECT", coverage.groupedSelectedTests().get(0).impactType());
         assertEquals("SELECTED", coverage.groupedSelectedTests().get(0).selectionStatus());
+        assertEquals(1, coverage.methodTestCoverage().size());
+        assertEquals(affectedMethod, coverage.methodTestCoverage().get(0).applicationMethod());
+        assertTrue(coverage.selectionNote().contains("JaCoCo data is missing"));
     }
 
     private static GraphNode methodNode(String id, String className, String methodName, String descriptor) {

@@ -32,6 +32,11 @@ import java.util.stream.Stream;
 
 final class BytecodeAPIUsageAnalyzer {
 
+    private static final String DEBUG_PROPERTY = "smartdeptest.debugApiMatching";
+
+    private static final Set<String> DEBUG_APPLICATION_KEYS = new HashSet<>();
+    private static final Set<ApiReference> DEBUG_API_KEYS = new HashSet<>();
+
     private final MavenModuleClasspathResolver classpathResolver;
     private final List<String> diagnostics = new ArrayList<>();
     private final ApplicationModuleScanner moduleScanner;
@@ -41,7 +46,35 @@ final class BytecodeAPIUsageAnalyzer {
         this.moduleScanner = new ApplicationModuleScanner(classpathResolver, diagnostics);
     }
 
+    private static boolean matchingDebugEnabled() {
+        return Boolean.getBoolean(DEBUG_PROPERTY);
+    }
+
+    private static String formatReference(ApiReference reference) {
+        return "kind=" + reference.kind()
+                + ", owner=" + reference.owner()
+                + ", name=" + reference.name()
+                + ", descriptor=" + reference.descriptor();
+    }
+
+    private static void debug(String message) {
+        if (matchingDebugEnabled()) {
+            System.out.println("[API-MATCH-DEBUG] " + message);
+        }
+    }
+
     APIUsageResult analyze(APIChangeResult apiChanges, Path projectDirectory) {
+        if (matchingDebugEnabled()) {
+            DEBUG_APPLICATION_KEYS.clear();
+            DEBUG_API_KEYS.clear();
+
+            System.out.println();
+            System.out.println("============================================================");
+            System.out.println("API MATCHING DEBUG ENABLED");
+            System.out.println("Property: -D" + DEBUG_PROPERTY + "=true");
+            System.out.println("============================================================");
+        }
+
         List<DependencyApiResult> analyzable = apiChanges.dependencies().stream()
                 .filter(d -> d.status() == DependencyApiResult.Status.ANALYZED)
                 .filter(d -> !d.changes().isEmpty())
@@ -54,7 +87,7 @@ final class BytecodeAPIUsageAnalyzer {
                     .map(d -> buildImpact(d, index))
                     .toList();
 
-                return new APIUsageResult(apiChanges.projectPath(), impacts, index.applicationCalls(),
+            return new APIUsageResult(apiChanges.projectPath(), impacts, index.applicationCalls(),
                     index.summary(), diagnostics);
 
         } catch (Exception e) {
@@ -65,7 +98,7 @@ final class BytecodeAPIUsageAnalyzer {
                     .map(d -> unavailableImpact(d, message))
                     .toList();
 
-                return new APIUsageResult(apiChanges.projectPath(), impacts, List.of(),
+            return new APIUsageResult(apiChanges.projectPath(), impacts, List.of(),
                     AnalysisSummary.empty(), diagnostics);
         }
     }
@@ -80,6 +113,15 @@ final class BytecodeAPIUsageAnalyzer {
         }
 
         Map<ApiReference, List<ImpactReference>> allReferences = buildReferenceIndex(analyzable);
+
+        debug("Analyzed dependencies: " + analyzable.size());
+        debug("API changes: " + analyzable.stream()
+                .mapToInt(d -> d.changes().size()).sum());
+        debug("Unique API reference keys before module filtering: "
+                + allReferences.size());
+        debug("Total API reference-to-change associations: "
+                + allReferences.values().stream().mapToInt(List::size).sum());
+        debug("Discovered application modules: " + modules.size());
 
         Map<ImpactReference, Set<UsageLocation>> locations = new HashMap<>();
         Set<Path> scannedClasses = new HashSet<>();
@@ -102,6 +144,10 @@ final class BytecodeAPIUsageAnalyzer {
                     .filter(d -> d.dependencyManagement() || isDeclaredInModule(d, module))
                     .toList();
 
+            debug("");
+            debug("MODULE: " + modulePath);
+            debug("Module dependency candidates: " + moduleDependencies.size());
+
             List<Path> classpath;
             try {
                 classpath = moduleDependencies.isEmpty()
@@ -109,25 +155,36 @@ final class BytecodeAPIUsageAnalyzer {
                         : classpathResolver.resolve(module);
             } catch (Exception e) {
                 addDiagnostic("Could not resolve classpath for module "
-                    + module.moduleDirectory() + ": " + messageOf(e));
+                        + module.moduleDirectory() + ": " + messageOf(e));
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
+                debug("CLASSPATH RESOLUTION FAILED: " + messageOf(e));
                 continue;
             }
+
+            debug("Resolved classpath entries: " + classpath.size());
 
             Map<ApiReference, List<ImpactReference>> moduleReferences = moduleDependencies.isEmpty()
                     ? Map.of()
                     : referencesOnModuleClasspath(
                             moduleDependencies, allReferences, classpath, diagnostics);
 
+            debug("Module API reference keys after filtering: "
+                    + moduleReferences.size());
+            debug("Module API reference associations after filtering: "
+                    + moduleReferences.values().stream().mapToInt(List::size).sum());
+
             List<Path> classDirectories = module.classesDirectories().stream()
                     .filter(Files::isDirectory)
                     .toList();
+
+            debug("Existing compiled class directories: " + classDirectories.size());
 
             if (classDirectories.isEmpty()) {
                 addDiagnostic("No compiled application classes for module "
                         + module.moduleDirectory() + "; configured output directories: "
                         + module.classesDirectories());
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
+                debug("MODULE SKIPPED: no compiled application classes.");
                 continue;
             }
 
@@ -156,9 +213,33 @@ final class BytecodeAPIUsageAnalyzer {
             classDirectoryFailures += result.directoryFailures();
             duplicateClassFilesSkipped += result.skipped();
 
+            debug("Class files discovered: " + result.discovered());
+            debug("Class files analyzed: " + result.analyzed());
+            debug("Class file failures: " + result.failed());
+            debug("Class directory failures: " + result.directoryFailures());
+            debug("Duplicate class files skipped: " + result.skipped());
+
             if (result.failed() > 0 || result.directoryFailures() > 0) {
                 incompleteModules.add(module.pomFile().toAbsolutePath().normalize());
             }
+        }
+
+        printApiMatchingReport(analyzable, locations);
+
+        if (matchingDebugEnabled()) {
+            System.out.println();
+            System.out.println("============================================================");
+            System.out.println("APPLICATION REFERENCE DEBUG SUMMARY");
+            System.out.println("============================================================");
+            System.out.println("Unique application reference keys logged: "
+                    + DEBUG_APPLICATION_KEYS.size());
+            System.out.println("Unique API reference keys created: "
+                    + DEBUG_API_KEYS.size());
+            System.out.println("API reference keys with identified usage: "
+                    + locations.values().stream().filter(v -> !v.isEmpty()).count());
+            System.out.println("Elapsed analysis time (ms): "
+                    + ((System.nanoTime() - started) / 1_000_000));
+            System.out.println("============================================================");
         }
 
         List<ApplicationCall> callsToApplicationMethods = applicationCalls.stream()
@@ -169,11 +250,81 @@ final class BytecodeAPIUsageAnalyzer {
                 .toList();
 
         AnalysisSummary summary = new AnalysisSummary(
-            modules.size(), incompleteModules.size(), classFilesDiscovered,
-            classFilesAnalyzed, classFileFailures, classDirectoryFailures,
-            duplicateClassFilesSkipped);
+                modules.size(), incompleteModules.size(), classFilesDiscovered,
+                classFilesAnalyzed, classFileFailures, classDirectoryFailures,
+                duplicateClassFilesSkipped);
         return new UsageIndex(locations, callsToApplicationMethods, incompleteModules, summary,
                 List.copyOf(diagnostics));
+    }
+
+    private static void printApiMatchingReport(
+            List<DependencyApiResult> dependencies,
+            Map<ImpactReference, Set<UsageLocation>> locations) {
+
+        int totalChanges = 0;
+        int matchedChanges = 0;
+        int unmatchedChanges = 0;
+
+        System.out.println();
+        System.out.println("============================================================");
+        System.out.println("API-TO-APPLICATION REFERENCE MATCHING");
+        System.out.println("============================================================");
+
+        for (DependencyApiResult dependency : dependencies) {
+            for (ApiChange change : dependency.changes()) {
+                totalChanges++;
+
+                ImpactReference impact = new ImpactReference(dependency, change);
+                Set<UsageLocation> matches = locations.getOrDefault(impact, Set.of());
+
+                System.out.println();
+                System.out.println("[CHANGED API]");
+                System.out.println("Dependency     : " + dependency.dependencyKey());
+                System.out.println("Change type    : " + change.kind());
+                System.out.println("Owner class    : " + change.className());
+                System.out.println("Member name    : " + change.memberName());
+                System.out.println("Old descriptor : " + change.oldDescriptor());
+                System.out.println("New descriptor : " + change.newDescriptor());
+
+                if (matches.isEmpty()) {
+                    unmatchedChanges++;
+                    System.out.println("[MATCH RESULT] NO_MATCH");
+                    System.out.println(
+                            "No application reference exactly matched this API change.");
+                    continue;
+                }
+
+                matchedChanges++;
+                System.out.println("[MATCH RESULT] MATCHED");
+                System.out.println("Matching application references: " + matches.size());
+
+                int displayed = 0;
+                for (UsageLocation location : matches) {
+                    if (displayed++ >= 10) {
+                        System.out.println("... additional matches omitted");
+                        break;
+                    }
+
+                    System.out.println("  Application class : "
+                            + location.className());
+                    System.out.println("  Containing method : "
+                            + location.methodName()
+                            + location.methodDescriptor());
+                    System.out.println("  Instruction       : "
+                            + location.instructionType());
+                    System.out.println("  Module            : "
+                            + location.modulePath());
+                }
+            }
+        }
+
+        System.out.println();
+        System.out.println("---------------- MATCHING SUMMARY ----------------");
+        System.out.println("Total API changes       : " + totalChanges);
+        System.out.println("Changes with matches    : " + matchedChanges);
+        System.out.println("Changes without matches : " + unmatchedChanges);
+        System.out.println("============================================================");
+        System.out.println();
     }
 
     private static boolean isDeclaredInModule(
@@ -264,9 +415,19 @@ final class BytecodeAPIUsageAnalyzer {
             Map<ApiReference, List<ImpactReference>> index,
             ApiReference reference,
             ImpactReference impact) {
+
         List<ImpactReference> list = index.computeIfAbsent(reference, ignored -> new ArrayList<>());
         if (!list.contains(impact)) {
             list.add(impact);
+        }
+
+        if (matchingDebugEnabled()) {
+            DEBUG_API_KEYS.add(reference);
+            debug("[API_CHANGE_KEY] " + formatReference(reference));
+            debug("  Dependency: " + impact.dependency().dependencyKey());
+            debug("  Change: " + impact.change().kind()
+                    + ", oldDescriptor=" + impact.change().oldDescriptor()
+                    + ", newDescriptor=" + impact.change().newDescriptor());
         }
     }
 
@@ -278,15 +439,17 @@ final class BytecodeAPIUsageAnalyzer {
 
         Set<DependencyApiResult> matched = new HashSet<>();
 
+        debug("Filtering API references for module classpath.");
+        debug("Global API reference keys before filtering: " + allReferences.size());
+
         for (DependencyApiResult dependency : dependencies) {
-            if (dependencyPresentOnClasspath(dependency, classpath)) {
+            boolean present = dependencyPresentOnClasspath(dependency, classpath);
+
+            if (present) {
                 matched.add(dependency);
+                debug("[CLASSPATH_DEPENDENCY_MATCH] " + dependency.dependencyKey()
+                        + ", selected version=" + dependency.newVersion());
             } else {
-                /*
-                 * For a removed dependency there may be no new artifact on the
-                 * current classpath. Its old artifact can still be used to
-                 * identify API references made by application bytecode.
-                 */
                 String oldArtifact = dependency.oldArtifactPath();
                 if (oldArtifact != null && !oldArtifact.isBlank()
                         && Files.isRegularFile(Path.of(oldArtifact))) {
@@ -296,11 +459,21 @@ final class BytecodeAPIUsageAnalyzer {
                     if (!diagnostics.contains(diagnostic)) {
                         diagnostics.add(diagnostic);
                     }
+                    debug("[CLASSPATH_OLD_ARTIFACT_MATCH] "
+                            + dependency.dependencyKey() + ", artifact=" + oldArtifact);
+                } else {
+                    debug("[CLASSPATH_DEPENDENCY_MISSING] "
+                            + dependency.dependencyKey()
+                            + ", expected version=" + dependency.newVersion()
+                            + ", old version=" + dependency.oldVersion());
                 }
             }
         }
 
+        debug("Dependencies retained after classpath filtering: " + matched.size());
+
         if (matched.isEmpty()) {
+            debug("FILTER RESULT: no dependency matched the module classpath.");
             return Map.of();
         }
 
@@ -313,6 +486,11 @@ final class BytecodeAPIUsageAnalyzer {
                 result.put(reference, relevant);
             }
         });
+
+        debug("Global API reference keys after filtering: " + result.size());
+        debug("Global API reference keys removed by filtering: "
+                + (allReferences.size() - result.size()));
+
         return result;
     }
 
@@ -433,7 +611,8 @@ final class BytecodeAPIUsageAnalyzer {
                 .toList();
 
         boolean used = findings.stream().anyMatch(UsageFinding::used);
-        boolean incomplete = moduleAnalysisIncomplete(dependency, index.incompleteModules());
+        boolean incomplete = moduleAnalysisIncomplete(
+                dependency, index.incompleteModules());
 
         Classification classification;
         String message = dependency.message();
@@ -444,12 +623,11 @@ final class BytecodeAPIUsageAnalyzer {
             classification = Classification.POTENTIAL_IMPACT;
         } else if (incomplete) {
             classification = Classification.ANALYSIS_UNAVAILABLE;
-            message = appendMessage(message,
-                    incompleteAnalysisMessage(dependency, index));
+            message = appendMessage(
+                    message, incompleteAnalysisMessage(dependency, index));
         } else {
             classification = Classification.NO_IDENTIFIED_IMPACT;
         }
-
         return new DependencyImpact(
                 dependency.dependencyKey(),
                 dependency.oldVersion(),
@@ -557,7 +735,56 @@ final class BytecodeAPIUsageAnalyzer {
             ApiReference reference,
             UsageLocation location) {
 
-        for (ImpactReference impact : references.getOrDefault(reference, List.of())) {
+        List<ImpactReference> exactMatches =
+                references.getOrDefault(reference, List.of());
+
+        if (matchingDebugEnabled()) {
+            String applicationKeyId = location.modulePath()
+                    + "|" + formatReference(reference);
+
+            if (DEBUG_APPLICATION_KEYS.add(applicationKeyId)) {
+                debug("[APPLICATION_REFERENCE_KEY] "
+                        + formatReference(reference));
+                debug("  Application class: " + location.className());
+                debug("  Containing method: " + location.methodName()
+                        + location.methodDescriptor());
+                debug("  Instruction: " + location.instructionType());
+                debug("  Module: " + location.modulePath());
+                debug("  Exact matching API entries: " + exactMatches.size());
+
+                for (ImpactReference impact : exactMatches.stream().limit(5).toList()) {
+                    debug("    EXACT MATCH: dependency="
+                            + impact.dependency().dependencyKey()
+                            + ", change=" + impact.change().kind()
+                            + ", oldDescriptor=" + impact.change().oldDescriptor()
+                            + ", newDescriptor=" + impact.change().newDescriptor());
+                }
+
+                if (exactMatches.isEmpty()) {
+                    List<ApiReference> nearCandidates = references.keySet().stream()
+                            .filter(candidate -> candidate.kind() == reference.kind())
+                            .filter(candidate -> candidate.owner().equals(reference.owner()))
+                            .filter(candidate -> candidate.name().equals(reference.name()))
+                            .limit(5)
+                            .toList();
+
+                    if (nearCandidates.isEmpty()) {
+                        debug("  NEAR MATCH: no API key with the same kind, owner, and name.");
+                    } else {
+                        debug("  NEAR MATCH candidates with same kind, owner, and name:");
+                        for (ApiReference candidate : nearCandidates) {
+                            debug("    " + formatReference(candidate));
+                        }
+                    }
+
+                    if (!reference.owner().equals(reference.owner().replace('.', '/'))) {
+                        debug("  NOTE: application owner contains dots; ASM owners normally use slashes.");
+                    }
+                }
+            }
+        }
+
+        for (ImpactReference impact : exactMatches) {
             locations.computeIfAbsent(impact, ignored -> new LinkedHashSet<>())
                     .add(location);
         }
@@ -697,7 +924,7 @@ final class BytecodeAPIUsageAnalyzer {
     }
 
     private record ScanResult(int discovered, int analyzed, int failed,
-                              int directoryFailures, int skipped) {
+            int directoryFailures, int skipped) {
     }
 
     private record UsageIndex(
@@ -957,7 +1184,7 @@ final class BytecodeAPIUsageAnalyzer {
                         return info;
                     } catch (IOException | RuntimeException e) {
                         addHierarchyDiagnostic("Cannot read hierarchy class "
-                            + classFile + ": " + messageOf(e));
+                                + classFile + ": " + messageOf(e));
                         continue;
                     }
                 }
@@ -977,7 +1204,7 @@ final class BytecodeAPIUsageAnalyzer {
                         return info;
                     }
                 } catch (IOException | RuntimeException e) {
-                        addHierarchyDiagnostic("Cannot inspect hierarchy archive "
+                    addHierarchyDiagnostic("Cannot inspect hierarchy archive "
                             + normalized + ": " + messageOf(e));
                 }
             }

@@ -12,11 +12,6 @@
     </properties>
     <dependencies>
         <dependency>
-            <groupId>com.github.siom79.japicmp</groupId>
-            <artifactId>japicmp</artifactId>
-            <version>0.23.1</version>
-        </dependency>
-        <dependency>
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm</artifactId>
             <version>9.7.1</version>

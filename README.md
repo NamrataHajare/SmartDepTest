@@ -1,6 +1,6 @@
 # SmartDepTest: Dependency and API Impact Analysis
 
-SmartDepTest finds a Maven dependency change, compares the old and new dependency JARs with JApiCmp, and uses ASM to locate changed API references in compiled application bytecode.
+SmartDepTest finds a Maven dependency change, compares the old and new dependency JARs directly with ASM, and uses ASM to locate changed API references in compiled application bytecode.
 
 ## In simple terms
 
@@ -71,7 +71,7 @@ java -Dsmartdeptest.git.timeout.seconds=300 -cp target/classes smartdeptest.Main
 
 ## Pipeline guides
 
-- [Architecture guide](docs/architecture/README.md): dependency detection, JApiCmp, ASM, and report responsibilities.
+- [Architecture guide](docs/architecture/README.md): dependency detection, ASM API comparison, bytecode analysis, and report responsibilities.
 - [Detailed design guide](docs/detailed-design/README.md): Git detection, API comparison, bytecode usage, and impact rules.
 
 ## Current limits
