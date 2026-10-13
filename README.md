@@ -117,15 +117,21 @@ dependencies from `target` into `extension\engine` before creating the
 ### Run and debug
 
 Open a Maven Git repository in VS Code and run **SmartDepTest: Analyze
-Dependency Impact** from the Command Palette. For a multi-root workspace, pick
-the Maven project to analyze. The extension requires a root `pom.xml`, invokes
+Project** from the Command Palette, the SmartDepTest activity bar, or the
+Explorer context menu on a Maven project folder or `pom.xml`. For a multi-root
+workspace, pick the Maven project to analyze. The extension requires a root `pom.xml`, invokes
 the packaged Java engine with a structured JSON-output option, reports Maven,
 Git, API-comparison and test-mapping failures, and opens the impact report in a
 Webview. Configure `smartdeptest.javaExecutable` if `java` is not on `PATH`, or
 `smartdeptest.analysisTimeoutMinutes` for large projects. For extension
 development, open `extension` in VS Code, run `npm install`, use **Run
 Extension** (F5), and invoke the same command in the Extension Development
-Host.
+Host. The SmartDepTest activity-bar view summarizes dependencies, changed
+APIs, affected application methods, selected tests, and warnings; the
+**SmartDepTest** output channel captures engine output and the status bar
+indicates analysis state. Before execution, the extension checks Git, Maven,
+and JDK 21+ and reports actionable configuration and dependency-resolution
+errors.
 
 The Webview initially shows at most three selected tests; **Show all N tests**
 expands the full deduplicated selection. Source links are emitted only when a

@@ -40,6 +40,7 @@ test("empty selection produces an explicit standalone report", () => {
     assert.match(html, /Selected tests \(0\)/);
     assert.match(html, /No tests were selected/);
     assert.match(html, /Available tests/);
+    assert.match(html, /Affected application methods \(0\)/);
 });
 
 test("test list initially limits to three and expands to any total", () => {

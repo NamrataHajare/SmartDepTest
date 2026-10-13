@@ -173,9 +173,13 @@ final class SmartDepTestRunner {
 
             JacocoMethodTestMapper.CoverageResult coverage;
             if (graph.allAffectedMethods().isEmpty()) {
+                String selectionNote = usage.analysisSummary().modulesIncomplete() > 0
+                        ? "Test selection was skipped because application bytecode analysis was incomplete. "
+                                + "Review the analysis warnings before treating the empty test list as complete."
+                        : "Test selection was skipped because no affected application methods were found.";
                 coverage = new JacocoMethodTestMapper.CoverageResult(
                         List.of(), List.of(), List.of(), List.of(),
-                        List.of(), "Test selection was skipped because no affected application methods were found.");
+                        List.of(), selectionNote);
             } else {
                 try {
                     System.out.println("[4/4] Mapping selected tests to affected methods...");
@@ -194,7 +198,10 @@ final class SmartDepTestRunner {
                 }
             }
             if (graph.allAffectedMethods().isEmpty()) {
-                System.out.println("[4/4] Skipping test mapping because no affected application methods were found.");
+                String reason = usage.analysisSummary().modulesIncomplete() > 0
+                        ? "application bytecode analysis was incomplete"
+                        : "no affected application methods were found";
+                System.out.println("[4/4] Skipping test mapping because " + reason + ".");
             }
             ImpactReportJsonExporter exporter = new ImpactReportJsonExporter();
             exporter.write(exporter.toReport(

@@ -12,16 +12,55 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:smartdeptest.runImpactAnalysis"
+    "onCommand:smartdeptest.analyzeProject",
+    "onCommand:smartdeptest.runImpactAnalysis",
+    "onView:smartdeptest.results"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
+        "command": "smartdeptest.analyzeProject",
+        "title": "SmartDepTest: Analyze Project"
+      },
+      {
         "command": "smartdeptest.runImpactAnalysis",
-        "title": "SmartDepTest: Analyze Dependency Impact"
+        "title": "SmartDepTest: Analyze Dependency Impact",
+        "category": "SmartDepTest"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "smartdeptest",
+          "title": "SmartDepTest",
+          "icon": "resources/smartdeptest.svg"
+        }
+      ]
+    },
+    "views": {
+      "smartdeptest": [
+        {
+          "id": "smartdeptest.results",
+          "name": "Analysis Results"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "smartdeptest.results",
+        "contents": "Run [SmartDepTest: Analyze Project](command:smartdeptest.analyzeProject) to inspect dependency impact and selected regression tests."
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "smartdeptest.analyzeProject",
+          "when": "explorerResourceIsFolder || resourceFilename == pom.xml",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "SmartDepTest",
       "properties": {
@@ -29,6 +68,11 @@
           "type": "string",
           "default": "java",
           "description": "Java executable used to launch the bundled SmartDepTest analysis engine."
+        },
+        "smartdeptest.mavenExecutable": {
+          "type": "string",
+          "default": "mvn",
+          "description": "Maven executable used for dependency resolution. Use an absolute path if Maven is not available in VS Code's PATH."
         },
         "smartdeptest.analysisTimeoutMinutes": {
           "type": "number",
@@ -46,7 +90,7 @@
     "test": "tsc -p ./tsconfig.test.json && node --test ./out-test/tests/report.test.js",
     "prepare:engine": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/copy-engine.ps1",
     "vscode:prepublish": "npm run compile && npm run prepare:engine",
-    "package": "vsce package"
+    "package": "vsce package --allow-missing-repository --skip-license"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",

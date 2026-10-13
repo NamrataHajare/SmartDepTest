@@ -140,6 +140,30 @@ class AnalysisPipelineTest {
     }
 
     @Test
+    void ideCompilationErrorClassMakesImpactAnalysisUnavailable() throws Exception {
+        Path localRepository = localRepository();
+        createLibraryJar(localRepository, "1.0", "package org.example; public class Service { "
+                + "public void obsolete() {} }");
+        createLibraryJar(localRepository, "2.0", "package org.example; public class Service { }");
+        Path project = createProject();
+        Path module = project.resolve("module-a");
+        Path classes = module.resolve("target/classes");
+        Files.createDirectories(classes.resolve("com/example"));
+        Files.writeString(module.resolve("pom.xml"), "<project/>", StandardCharsets.UTF_8);
+        writeCompilationErrorClass(classes.resolve("com/example/App.class"));
+
+        APIChangeResult apiChanges = analyzeApiChange(localRepository, project, "1.0", "2.0");
+        APIUsageResult usage = analyzeUsage(localRepository, apiChanges, project, List.of("module-a"));
+
+        assertEquals(APIUsageResult.Classification.ANALYSIS_UNAVAILABLE,
+                usage.dependencies().get(0).classification());
+        assertEquals(1, usage.analysisSummary().modulesIncomplete());
+        assertTrue(usage.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.contains("IDE-generated class")
+                        && diagnostic.contains("unresolved compilation problems")));
+    }
+
+    @Test
     void addedMethodIsReportedButDoesNotCreateImpact() throws Exception {
         Path localRepository = localRepository();
         createLibraryJar(localRepository, "1.0", "package org.example; public class Service { }");
@@ -750,6 +774,24 @@ class AnalysisPipelineTest {
                 method.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "org/example/Child", "removed", "()V", false);
                 method.visitInsn(Opcodes.RETURN);
                 method.visitMaxs(2, 1);
+                method.visitEnd();
+                writer.visitEnd();
+                Files.write(classFile, writer.toByteArray());
+        }
+
+        private static void writeCompilationErrorClass(Path classFile) throws IOException {
+                ClassWriter writer = new ClassWriter(0);
+                writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/App", null,
+                                "java/lang/Object", null);
+                MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "call", "()V", null, null);
+                method.visitCode();
+                method.visitTypeInsn(Opcodes.NEW, "java/lang/Error");
+                method.visitInsn(Opcodes.DUP);
+                method.visitLdcInsn("Unresolved compilation problems: ZipFile cannot be resolved to a type");
+                method.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Error", "<init>",
+                                "(Ljava/lang/String;)V", false);
+                method.visitInsn(Opcodes.ATHROW);
+                method.visitMaxs(3, 1);
                 method.visitEnd();
                 writer.visitEnd();
                 Files.write(classFile, writer.toByteArray());

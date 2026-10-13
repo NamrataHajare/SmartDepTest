@@ -5,23 +5,51 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildStandaloneHtml, buildWebviewHtml, SmartDepReport } from "./report";
+import { SmartDepTestResultsView } from "./resultsView";
 
 const engineJarName = "smartdeptest-component1-1.0-SNAPSHOT.jar";
+let analysisRunning = false;
 
 export function activate(context: vscode.ExtensionContext): void {
-    context.subscriptions.push(vscode.commands.registerCommand(
-        "smartdeptest.runImpactAnalysis",
-        () => runAnalysis(context),
-    ));
+    const output = vscode.window.createOutputChannel("SmartDepTest");
+    const results = new SmartDepTestResultsView();
+    const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    status.command = "smartdeptest.analyzeProject";
+    status.text = "$(beaker) SmartDepTest: Ready";
+    status.tooltip = "Analyze dependency impact and select regression tests";
+    status.show();
+    context.subscriptions.push(
+        output,
+        status,
+        vscode.window.registerTreeDataProvider("smartdeptest.results", results),
+        vscode.commands.registerCommand("smartdeptest.analyzeProject", (resource?: unknown) =>
+            runAnalysis(context, output, status, results, resource)),
+        vscode.commands.registerCommand("smartdeptest.runImpactAnalysis", (resource?: unknown) =>
+            runAnalysis(context, output, status, results, resource)),
+    );
 }
 
 export function deactivate(): void {}
 
-async function runAnalysis(context: vscode.ExtensionContext): Promise<void> {
-    const projectRoot = await chooseProjectRoot();
+async function runAnalysis(
+    context: vscode.ExtensionContext,
+    output: vscode.OutputChannel,
+    status: vscode.StatusBarItem,
+    results: SmartDepTestResultsView,
+    resource?: unknown,
+): Promise<void> {
+    if (analysisRunning) {
+        void vscode.window.showInformationMessage("SmartDepTest analysis is already running.");
+        return;
+    }
+    const projectRoot = await chooseProjectRoot(resource);
     if (!projectRoot) {
         return;
     }
+    analysisRunning = true;
+    output.appendLine(`\n=== SmartDepTest analysis: ${projectRoot} ===`);
+    output.show(true);
+    setStatus(status, results, "running", "$(sync~spin) SmartDepTest: Running");
     const jarPath = path.join(context.extensionPath, "engine", engineJarName);
     const dependencyDirectory = path.join(context.extensionPath, "engine", "dependency");
     try {
@@ -32,52 +60,96 @@ async function runAnalysis(context: vscode.ExtensionContext): Promise<void> {
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`Engine package error: ${message}`);
+        setStatus(status, results, "failed", "$(error) SmartDepTest: Failed", message);
         void vscode.window.showErrorMessage(`SmartDepTest engine is unavailable: ${message}`);
+        analysisRunning = false;
         return;
     }
 
-    const javaExecutable = vscode.workspace.getConfiguration("smartdeptest")
-        .get<string>("javaExecutable", "java");
-    const timeoutMinutes = vscode.workspace.getConfiguration("smartdeptest")
-        .get<number>("analysisTimeoutMinutes", 20);
+    const configuration = vscode.workspace.getConfiguration("smartdeptest");
+    const javaExecutable = configuration.get<string>("javaExecutable", "java");
+    const mavenExecutable = configuration.get<string>("mavenExecutable", "mvn");
+    const timeoutMinutes = configuration.get<number>("analysisTimeoutMinutes", 20);
     const boundedTimeoutMinutes = Number.isFinite(timeoutMinutes)
         ? Math.max(1, Math.min(120, timeoutMinutes)) : 20;
-    const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "smartdeptest-"));
-    const resultPath = path.join(tempDirectory, "impact-report.json");
-    let report: SmartDepReport;
+    let tempDirectory: string | undefined;
     try {
+        await verifyPrerequisites(javaExecutable, mavenExecutable, projectRoot);
+        tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "smartdeptest-"));
+        const resultPath = path.join(tempDirectory, "impact-report.json");
+        let report: SmartDepReport;
         report = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: "SmartDepTest dependency impact analysis",
             cancellable: true,
         }, async (progress, token) => {
             progress.report({ message: "Resolving dependency versions and comparing APIs…" });
-            await runEngine(javaExecutable, jarPath, resultPath, projectRoot,
-                boundedTimeoutMinutes * 60_000, token, message => progress.report({ message }));
+            await runEngine(
+                javaExecutable,
+                mavenExecutable,
+                jarPath,
+                resultPath,
+                projectRoot,
+                output,
+                boundedTimeoutMinutes * 60_000,
+                token,
+                message => progress.report({ message }),
+            );
             progress.report({ message: "Loading structured impact results…" });
             const raw = await fs.readFile(resultPath, "utf8");
             const parsed: unknown = JSON.parse(raw);
             return validateReport(parsed);
         });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message !== "Analysis cancelled.") {
-            void vscode.window.showErrorMessage(`SmartDepTest analysis failed: ${message}`);
+        showReport(context, projectRoot, report);
+        results.setCompleted(report);
+        if (report.dependencyUpdate.status === "PARTIAL") {
+            const detail = report.warnings[0] ?? "Some project bytecode could not be analyzed.";
+            setStatus(status, results, "failed", "$(warning) SmartDepTest: Incomplete", detail);
+            output.appendLine(
+                `Analysis incomplete. ${report.tests.length} unique tests selected; review report warnings.`,
+            );
+            void vscode.window.showWarningMessage(
+                "SmartDepTest analysis is incomplete. Review the report warnings before relying on test selection.",
+            );
+        } else {
+            setStatus(status, results, "completed", "$(check) SmartDepTest: Complete");
+            output.appendLine(`Analysis completed. ${report.tests.length} unique tests selected.`);
+            void vscode.window.showInformationMessage(
+                `SmartDepTest analysis complete: ${report.tests.length} unique tests selected.`,
+            );
         }
-        return;
+    } catch (error) {
+        const message = formatAnalysisError(error);
+        output.appendLine(`Analysis failed: ${message}`);
+        setStatus(status, results, "failed", "$(error) SmartDepTest: Failed", message);
+        if (message !== "Analysis cancelled.") {
+            output.show(true);
+            void vscode.window.showErrorMessage(`SmartDepTest analysis failed: ${message}`);
+        } else {
+            setStatus(status, results, "cancelled", "$(circle-slash) SmartDepTest: Cancelled");
+        }
     } finally {
-        await fs.rm(tempDirectory, { recursive: true, force: true }).catch(error => {
-            console.error("SmartDepTest temporary report cleanup failed.", error);
-        });
+        if (tempDirectory) {
+            await fs.rm(tempDirectory, { recursive: true, force: true }).catch(error => {
+                output.appendLine(`Temporary report cleanup failed: ${String(error)}`);
+            });
+        }
+        analysisRunning = false;
     }
-
-    showReport(context, projectRoot, report);
-    void vscode.window.showInformationMessage(
-        `SmartDepTest analysis complete: ${report.tests.length} unique tests selected.`,
-    );
 }
 
-async function chooseProjectRoot(): Promise<string | undefined> {
+async function chooseProjectRoot(resource?: unknown): Promise<string | undefined> {
+    if (resource instanceof vscode.Uri) {
+        const selectedPath = resource.fsPath;
+        const root = path.basename(selectedPath).toLowerCase() === "pom.xml"
+            ? path.dirname(selectedPath) : selectedPath;
+        if (await hasPom(root)) {
+            return root;
+        }
+        void vscode.window.showErrorMessage(`No pom.xml was found at the selected project root: ${root}`);
+        return undefined;
+    }
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (!folders.length) {
         void vscode.window.showErrorMessage("Open a Maven project folder before running SmartDepTest.");
@@ -94,12 +166,7 @@ async function chooseProjectRoot(): Promise<string | undefined> {
         selected = choice;
     }
     const root = selected.uri.fsPath;
-    try {
-        const stat = await fs.stat(path.join(root, "pom.xml"));
-        if (!stat.isFile()) {
-            throw new Error("not a regular file");
-        }
-    } catch {
+    if (!await hasPom(root)) {
         void vscode.window.showErrorMessage(
             `No pom.xml was found at the selected project root: ${root}`,
         );
@@ -108,16 +175,173 @@ async function chooseProjectRoot(): Promise<string | undefined> {
     return root;
 }
 
+async function hasPom(root: string): Promise<boolean> {
+    try {
+        return (await fs.stat(path.join(root, "pom.xml"))).isFile();
+    } catch {
+        return false;
+    }
+}
+
+async function verifyPrerequisites(
+    javaExecutable: string,
+    mavenExecutable: string,
+    projectRoot: string,
+): Promise<void> {
+    try {
+        await runCheck("git", ["-C", projectRoot, "rev-parse", "--show-toplevel"]);
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (/not recognized|ENOENT|cannot find|not found/i.test(detail)) {
+            throw new Error("Git is not installed or is not available in PATH. Install Git and reopen VS Code.");
+        }
+        throw new Error("The selected project is not a valid Git repository. Open the repository root or initialize Git.");
+    }
+    try {
+        await runCheck(mavenExecutable, ["-version"]);
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+            `Maven could not be started using '${mavenExecutable}'. Install Maven and add it to PATH, ` +
+            "or set smartdeptest.mavenExecutable to the full path of mvn.cmd in VS Code settings. " +
+            detail,
+        );
+    }
+    let javaVersion: string;
+    try {
+        javaVersion = await runCheck(javaExecutable, ["-version"]);
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Java could not be started using '${javaExecutable}'. Check smartdeptest.javaExecutable and install a JDK 21 or newer. ${detail}`);
+    }
+    const versionMatch = /version\s+"(?:1\.)?(\d+)/i.exec(javaVersion);
+    if (!versionMatch || Number(versionMatch[1]) < 21) {
+        throw new Error(`SmartDepTest requires JDK 21 or newer. Java reported: ${javaVersion.trim() || "an unknown version"}`);
+    }
+}
+
+// function runCheck(executable: string, args: string[]): Promise<string> {
+//     return new Promise((resolve, reject) => {
+//         const child = childProcess.spawn(executable, args, { windowsHide: true, shell: false });
+//         let stdout = "";
+//         let stderr = "";
+//         child.stdout.setEncoding("utf8");
+//         child.stderr.setEncoding("utf8");
+//         child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+//         child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+//         child.on("error", reject);
+//         child.on("close", code => {
+//             const result = `${stdout}\n${stderr}`.trim();
+//             if (code === 0) {
+//                 resolve(result);
+//             } else {
+//                 reject(new Error(result || `${executable} exited with status ${String(code)}.`));
+//             }
+//         });
+//     });
+// }
+function runCheck(executable: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const windows = process.platform === "win32";
+
+        const command = windows ? "cmd.exe" : executable;
+        const commandArgs = windows
+            ? [
+                "/d",
+                "/s",
+                "/c",
+                [executable, ...args]
+                    .map(quoteForCommandPrompt)
+                    .join(" "),
+            ]
+            : args;
+
+        const child = childProcess.spawn(command, commandArgs, {
+            windowsHide: true,
+            shell: false,
+        });
+
+        let stdout = "";
+        let stderr = "";
+
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+
+        child.stdout.on("data", (chunk: string) => {
+            stdout += chunk;
+        });
+
+        child.stderr.on("data", (chunk: string) => {
+            stderr += chunk;
+        });
+
+        child.on("error", reject);
+
+        child.on("close", code => {
+            const result = `${stdout}\n${stderr}`.trim();
+
+            if (code === 0) {
+                resolve(result);
+            } else {
+                reject(
+                    new Error(
+                        result || `${executable} exited with status ${String(code)}.`,
+                    ),
+                );
+            }
+        });
+    });
+}
+
+function quoteForCommandPrompt(argument: string): string {
+    if (
+        argument.length > 0 &&
+        !argument.includes('"') &&
+        !/[\s&|<>^()]/.test(argument)
+    ) {
+        return argument;
+    }
+
+    return `"${argument.replace(/"/g, '""')}"`;
+}
+function setStatus(
+    status: vscode.StatusBarItem,
+    results: SmartDepTestResultsView,
+    state: "running" | "completed" | "failed" | "cancelled",
+    text: string,
+    detail?: string,
+): void {
+    status.text = text;
+    status.tooltip = detail ? `SmartDepTest ${state}: ${detail}` : `SmartDepTest ${state}`;
+    results.setState(state, detail);
+}
+
+function formatAnalysisError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/could not resolve|could not find artifact|failed to collect dependencies|BUILD FAILURE/i.test(message)) {
+        return `Maven dependency resolution failed. Check the POM, repository credentials, network access, and Maven output. ${message}`;
+    }
+    return message;
+}
+
 function runEngine(
     javaExecutable: string,
+    mavenExecutable: string,
     jarPath: string,
     resultPath: string,
     projectRoot: string,
+    output: vscode.OutputChannel,
     timeoutMilliseconds: number,
     token: vscode.CancellationToken,
     onProgress: (message: string) => void,
 ): Promise<void> {
     return new Promise((resolve, reject) => {
+        const environment = { ...process.env };
+        if (path.isAbsolute(mavenExecutable)) {
+            const mavenDirectory = path.dirname(mavenExecutable);
+            const currentPath = environment.PATH ?? environment.Path;
+            environment.PATH = [mavenDirectory, currentPath].filter(Boolean).join(path.delimiter);
+        }
         const child = childProcess.spawn(javaExecutable, [
             "-cp",
             jarPath,
@@ -127,6 +351,7 @@ function runEngine(
             projectRoot,
         ], {
             cwd: projectRoot,
+            env: environment,
             windowsHide: true,
             shell: false,
         });
@@ -156,6 +381,7 @@ function runEngine(
         child.stderr.setEncoding("utf8");
         child.stdout.on("data", (chunk: string) => {
             stdout = (stdout + chunk).slice(-16_000);
+            output.append(chunk);
             const latest = chunk.trim().split(/\r?\n/).filter(Boolean).at(-1);
             if (latest) {
                 onProgress(latest);
@@ -163,6 +389,7 @@ function runEngine(
         });
         child.stderr.on("data", (chunk: string) => {
             stderr = (stderr + chunk).slice(-16_000);
+            output.append(chunk);
         });
         child.on("error", error => finish(new Error(
             `Unable to start Java executable '${javaExecutable}': ${error.message}`,

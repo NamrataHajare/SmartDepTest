@@ -124,6 +124,7 @@ report.dependencies.forEach(d=>{const e=el('p');e.textContent=d.groupId+':'+d.ar
 const apis=section('Changed APIs and affected application methods');
 if(!report.changedApis.length)apis.appendChild(el('p','No changed API records were produced.','empty'));
 report.changedApis.forEach(api=>{const e=el('div',undefined,'entry');e.appendChild(el('h3',(api.className||'')+'.'+(api.memberName||'(class)')+'  ·  '+(api.changeType||'API change')));e.appendChild(el('div','Old: '+(api.oldSignature||api.oldDescriptor||'Unavailable')+'    New: '+(api.newSignature||api.newDescriptor||'Unavailable'),'muted'));(api.affectedMethods||[]).forEach(m=>{const line=el('div',undefined,'api-method');line.appendChild(el('div',m.displayName+'  ·  '+m.classification));line.appendChild(el('div',m.reason,'muted'));showLocation(line,m.source);const action=open(m.source,'Open application method');if(action)line.appendChild(action);e.appendChild(line);});apis.appendChild(e);});
+const methods=section('Affected application methods');if(!report.affectedMethods.length)methods.appendChild(el('p','No affected application methods were identified.','empty'));report.affectedMethods.forEach(m=>{const e=el('div',undefined,'entry');e.appendChild(el('h3',m.displayName+'  ·  '+m.classification));e.appendChild(el('div',m.reason,'muted'));showLocation(e,m.source);const action=open(m.source,'Open application method');if(action)e.appendChild(action);methods.appendChild(e);});
 const tests=section('Selected tests');
 const sums=el('table',undefined,'summary');const sumBody=el('tbody');
 [['Available tests',report.testSummary.availableTests],['Unique selected',report.testSummary.selectedTests],['Directly affected',report.testSummary.directlyAffectedTests],['Indirectly affected',report.testSummary.indirectlyAffectedTests],['Not selected',report.testSummary.notSelectedTests]].forEach(([k,v])=>{const row=el('tr');row.appendChild(el('th',k));row.appendChild(el('td',v===null?'Not available':v));sumBody.appendChild(row);});
@@ -156,6 +157,8 @@ export function buildStandaloneHtml(report: SmartDepReport): string {
             `<li>${escapeHtml(method.displayName)} · ${escapeHtml(method.classification)}<p>${escapeHtml(method.reason)}</p>${sourceHtml(method.source)}</li>`).join("");
         return `<li><strong>${escapeHtml(api.className)}.${escapeHtml(api.memberName || "(class)")}</strong> · ${escapeHtml(api.changeType)}<p>Old: ${escapeHtml(api.oldSignature || api.oldDescriptor || "Unavailable")} · New: ${escapeHtml(api.newSignature || api.newDescriptor || "Unavailable")}</p><ul>${methods}</ul></li>`;
     }).join("");
+    const affectedMethods = report.affectedMethods.map(method =>
+        `<li><strong>${escapeHtml(method.displayName)}</strong> · ${escapeHtml(method.classification)}<p>${escapeHtml(method.reason)}</p>${sourceHtml(method.source)}</li>`).join("");
     const tests = report.tests.map(test =>
         `<article><h3>${escapeHtml(test.testClass)}#${escapeHtml(test.testMethod)} <small>${escapeHtml(test.classification)}</small></h3>${sourceHtml(test.source)}<p>Affected methods:</p><ul>${test.affectedMethods.map(method => `<li>${escapeHtml(method.displayName)} · ${escapeHtml(method.classification)}${sourceHtml(method.source)}</li>`).join("")}</ul><p>Static call paths:</p><ul>${test.callPaths.map(path => `<li>${path.map(escapeHtml).join(" → ")}</li>`).join("") || "<li>Association found; individual call path not retained.</li>"}</ul></article>`).join("");
     const warnings = [...report.warnings, ...report.errors].map(w => `<li>${escapeHtml(w)}</li>`).join("");
@@ -165,6 +168,7 @@ body{font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;color:#202733;
 </style></head><body><h1>SmartDepTest dependency impact report</h1><p class="muted">${escapeHtml(report.projectPath)}</p><p>Analysis status: ${escapeHtml(report.dependencyUpdate.status)} · Revision: ${escapeHtml(report.dependencyUpdate.commitId || "Unavailable")} · Previous: ${escapeHtml(report.dependencyUpdate.previousCommitId || "Unavailable")}</p>
 <section><h2>Dependency update</h2><ul>${dependencies || "<li>No dependency updates.</li>"}</ul></section>
 <section><h2>Changed APIs and affected application methods</h2><ul>${apis || "<li>No changed API records.</li>"}</ul></section>
+<section><h2>Affected application methods (${report.affectedMethods.length})</h2><ul>${affectedMethods || "<li>No affected application methods were identified.</li>"}</ul></section>
 <section><h2>Test-selection summary</h2><table>${summaryRows}</table><p>${escapeHtml(report.testSummary.selectionEvidence)}</p></section>
 <section><h2>Selected tests (${report.tests.length})</h2>${tests || "<p>No tests were selected.</p>"}</section>
 <section><h2>Unresolved mappings</h2><ul>${report.testSummary.unresolvedMappings.map(item => `<li>${escapeHtml(item.applicationMethod)} · ${escapeHtml(item.status)} · ${escapeHtml(item.reason)}</li>`).join("") || "<li>None reported.</li>"}</ul></section>

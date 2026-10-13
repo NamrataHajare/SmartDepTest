@@ -33,6 +33,7 @@ import java.util.stream.Stream;
 final class BytecodeAPIUsageAnalyzer {
 
     private static final String DEBUG_PROPERTY = "smartdeptest.debugApiMatching";
+    private static final String COMPILATION_ERROR_MARKER = "Unresolved compilation problem";
 
     private static final Set<String> DEBUG_APPLICATION_KEYS = new HashSet<>();
     private static final Set<ApiReference> DEBUG_API_KEYS = new HashSet<>();
@@ -576,7 +577,15 @@ final class BytecodeAPIUsageAnalyzer {
                     }
 
                     try (InputStream input = Files.newInputStream(normalized)) {
-                        new ClassReader(input).accept(
+                        byte[] bytecode = input.readAllBytes();
+                        if (containsCompilationError(bytecode)) {
+                            failed++;
+                            addDiagnostic("Detected an IDE-generated class with unresolved compilation "
+                                    + "problems: " + normalized
+                                    + ". Rebuild the project successfully before analyzing dependency impact.");
+                            continue;
+                        }
+                        new ClassReader(bytecode).accept(
                                 new UsageClassVisitor(
                                         references, locations, hierarchy,
                                         applicationMethods, applicationCalls, modulePath),
@@ -596,6 +605,27 @@ final class BytecodeAPIUsageAnalyzer {
         }
 
         return new ScanResult(discovered, scanned, failed, directoryFailures, skipped);
+    }
+
+    private static boolean containsCompilationError(byte[] bytecode) {
+        boolean[] found = {false};
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(
+                    int access, String name, String descriptor,
+                    String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitLdcInsn(Object value) {
+                        if (value instanceof String message
+                                && message.startsWith(COMPILATION_ERROR_MARKER)) {
+                            found[0] = true;
+                        }
+                    }
+                };
+            }
+        }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        return found[0];
     }
 
     private static DependencyImpact buildImpact(
