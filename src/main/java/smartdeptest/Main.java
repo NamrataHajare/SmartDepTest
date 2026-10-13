@@ -7,6 +7,7 @@ import smartdeptest.analysis.APIUsageResult;
 import smartdeptest.analysis.ApiChange;
 import smartdeptest.analysis.DependencyApiResult;
 import smartdeptest.analysis.JacocoMethodTestMapper;
+import smartdeptest.analysis.ImpactReportJsonExporter;
 import smartdeptest.dependency.DependencyChange;
 import smartdeptest.dependency.DependencyChangeDetector;
 import smartdeptest.dependency.DependencyChangeResult;
@@ -81,6 +82,10 @@ final class SmartDepTestRunner {
     private SmartDepTestRunner() {}
 
     public static void main(String[] args) {
+        if (args.length > 0 && "--json".equals(args[0])) {
+            runStructured(args);
+            return;
+        }
         System.out.println("============================================================");
         System.out.println("MAVEN DEPENDENCY IMPACT ANALYSIS");
         System.out.println("============================================================");
@@ -91,6 +96,7 @@ final class SmartDepTestRunner {
             System.out.print("Enter Maven project path:\n> ");
             input = new Scanner(System.in).nextLine().trim();
         }
+
         if (input.length() >= 2 && ((input.startsWith("\"") && input.endsWith("\""))
                 || (input.startsWith("'") && input.endsWith("'")))) {
             input = input.substring(1, input.length() - 1);
@@ -137,6 +143,68 @@ final class SmartDepTestRunner {
         } catch (LinkageError error) {
             System.out.println("ERROR: An analysis runtime dependency could not be loaded. "
                     + "Run `mvn compile` first. Details: " + error.getMessage());
+        }
+    }
+
+    private static void runStructured(String[] args) {
+        if (args.length != 3 || args[1].isBlank() || args[2].isBlank()) {
+            System.err.println("Usage: smartdeptest.Main --json <output.json> <maven-project>");
+            System.exit(2);
+            return;
+        }
+        try {
+            Path output = Path.of(args[1]).toAbsolutePath().normalize();
+            Path project = Path.of(args[2]).toAbsolutePath().normalize();
+            if (!Files.isDirectory(project)) {
+                throw new IOException("Project directory does not exist: " + project);
+            }
+
+            System.out.println("[1/4] Detecting dependency changes from Git and Maven POM history...");
+            DependencyChangeResult dependencyChanges =
+                    new DependencyChangeDetector().detect(project);
+            System.out.println("[2/4] Comparing dependency APIs...");
+            APIChangeResult apiChanges =
+                    new APIChangeAnalyzer().analyze(dependencyChanges);
+            System.out.println("[3/4] Analyzing application bytecode and impact paths...");
+            APIUsageResult usage =
+                    new APIUsageAnalyzer().analyze(apiChanges, project);
+            DependencyGraphResult graph =
+                    new DependencyGraphBuilder().build(apiChanges, usage);
+
+            JacocoMethodTestMapper.CoverageResult coverage;
+            if (graph.allAffectedMethods().isEmpty()) {
+                coverage = new JacocoMethodTestMapper.CoverageResult(
+                        List.of(), List.of(), List.of(), List.of(),
+                        List.of(), "Test selection was skipped because no affected application methods were found.");
+            } else {
+                try {
+                    System.out.println("[4/4] Mapping selected tests to affected methods...");
+                    coverage = new JacocoMethodTestMapper().map(project, graph);
+                } catch (IOException exception) {
+                    coverage = new JacocoMethodTestMapper.CoverageResult(
+                            List.of(), List.of(), graph.allAffectedMethods().stream()
+                                    .map(method -> new DependencyGraphResult.AffectedMethodTestGroup(
+                                            method, graph.directlyImpactedMethods().contains(method)
+                                                    ? "DIRECT" : "INDIRECT",
+                                            List.of(), "NOT ANALYZED", exception.getMessage()))
+                                    .toList(),
+                            List.of(exception.getClass().getSimpleName() + ": "
+                                    + exception.getMessage()),
+                            List.of(), "Test mapping could not be completed.");
+                }
+            }
+            if (graph.allAffectedMethods().isEmpty()) {
+                System.out.println("[4/4] Skipping test mapping because no affected application methods were found.");
+            }
+            ImpactReportJsonExporter exporter = new ImpactReportJsonExporter();
+            exporter.write(exporter.toReport(
+                    dependencyChanges, apiChanges, usage, graph, coverage), output);
+        } catch (Exception exception) {
+            String message = exception.getMessage();
+            System.err.println("SmartDepTest JSON analysis failed: "
+                    + exception.getClass().getSimpleName()
+                    + (message == null || message.isBlank() ? "" : ": " + message));
+            System.exit(1);
         }
     }
 

@@ -1,0 +1,57 @@
+{
+  "name": "smartdeptest-impact",
+  "displayName": "SmartDepTest Impact Analysis",
+  "description": "Run SmartDepTest dependency impact analysis and inspect selected regression tests.",
+  "version": "1.0.0",
+  "publisher": "smartdeptest",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:smartdeptest.runImpactAnalysis"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "smartdeptest.runImpactAnalysis",
+        "title": "SmartDepTest: Analyze Dependency Impact"
+      }
+    ],
+    "configuration": {
+      "title": "SmartDepTest",
+      "properties": {
+        "smartdeptest.javaExecutable": {
+          "type": "string",
+          "default": "java",
+          "description": "Java executable used to launch the bundled SmartDepTest analysis engine."
+        },
+        "smartdeptest.analysisTimeoutMinutes": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Maximum time allowed for Maven and SmartDepTest analysis."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./tsconfig.test.json && node --test ./out-test/tests/report.test.js",
+    "prepare:engine": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/copy-engine.ps1",
+    "vscode:prepublish": "npm run compile && npm run prepare:engine",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.26.1",
+    "typescript": "^5.4.5"
+  }
+}

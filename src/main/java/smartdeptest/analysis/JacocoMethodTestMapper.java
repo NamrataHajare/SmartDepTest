@@ -115,6 +115,7 @@ public final class JacocoMethodTestMapper {
         for (String method : new LinkedHashSet<>(affectedMethods)) {
             testsByAffectedMethod.put(method, new LinkedHashSet<>());
         }
+        List<TestCallPath> callPaths = new ArrayList<>();
 
         mapMavenInvokerFixtures(
                 root,
@@ -205,7 +206,9 @@ public final class JacocoMethodTestMapper {
                             reason),
                     failures,
                     List.of(),
-                    reason);
+                    reason,
+                    List.of(),
+                    0);
         }
 
         Map<MethodKey, String> applicationMethods =
@@ -232,6 +235,7 @@ public final class JacocoMethodTestMapper {
                     + "#" + entryPoint.method().name();
 
             Set<String> reachedApplicationMethods = new LinkedHashSet<>();
+            Map<String, List<String>> pathsByAffectedMethod = new LinkedHashMap<>();
 
             traceTestMethod(
                     entryPoint.method(),
@@ -240,7 +244,11 @@ public final class JacocoMethodTestMapper {
                     applicationMethods,
                     callsByApplicationMethod,
                     new HashSet<>(),
-                    reachedApplicationMethods);
+                    reachedApplicationMethods,
+                    new ArrayList<>(),
+                    new LinkedHashSet<>(),
+                    affectedSet,
+                    pathsByAffectedMethod);
 
             for (String affectedMethod : affectedSet) {
                 if (reachedApplicationMethods.contains(affectedMethod)) {
@@ -248,6 +256,11 @@ public final class JacocoMethodTestMapper {
                             .computeIfAbsent(
                                     affectedMethod, ignored -> new LinkedHashSet<>())
                             .add(testId);
+                    List<String> path = pathsByAffectedMethod.get(affectedMethod);
+                    if (path != null) {
+                        callPaths.add(new TestCallPath(
+                                testId, affectedMethod, path));
+                    }
                 }
             }
         }
@@ -259,7 +272,9 @@ public final class JacocoMethodTestMapper {
                 testsByAffectedMethod,
                 testBytecodeReady,
                 failures,
-                evidenceNote);
+                evidenceNote,
+                callPaths,
+                testEntryPoints.size());
     }
 
     private static CoverageResult buildCoverageResult(
@@ -270,6 +285,28 @@ public final class JacocoMethodTestMapper {
             boolean testBytecodeReady,
             List<String> failures,
             String selectionNote) {
+        return buildCoverageResult(
+                affectedMethods,
+                directlyImpactedMethods,
+                indirectlyAffectedMethods,
+                testsByAffectedMethod,
+                testBytecodeReady,
+                failures,
+                selectionNote,
+                List.of(),
+                null);
+    }
+
+    private static CoverageResult buildCoverageResult(
+            List<String> affectedMethods,
+            List<String> directlyImpactedMethods,
+            List<String> indirectlyAffectedMethods,
+            Map<String, Set<String>> testsByAffectedMethod,
+            boolean testBytecodeReady,
+            List<String> failures,
+            String selectionNote,
+            List<TestCallPath> callPaths,
+            Integer availableTestCount) {
 
         List<DependencyGraphResult.MethodTestCoverage> mappings =
                 new ArrayList<>();
@@ -325,7 +362,9 @@ public final class JacocoMethodTestMapper {
                 groups,
                 failures,
                 List.of(),
-                selectionNote);
+                selectionNote,
+                callPaths,
+                availableTestCount);
     }
 
     private static List<Path> identifyAffectedApplicationModules(
@@ -1354,7 +1393,11 @@ public final class JacocoMethodTestMapper {
             Map<MethodKey, String> applicationMethods,
             Map<String, Set<String>> applicationCalls,
             Set<MethodKey> visitedTestMethods,
-            Set<String> reachedApplicationMethods) {
+            Set<String> reachedApplicationMethods,
+            List<String> testPath,
+            Set<String> visitedApplicationMethods,
+            Set<String> affectedMethods,
+            Map<String, List<String>> pathsByAffectedMethod) {
 
         if (!visitedTestMethods.add(method)) {
             return;
@@ -1365,19 +1408,27 @@ public final class JacocoMethodTestMapper {
             traceApplicationMethod(
                     applicationMethod,
                     applicationCalls,
-                    new LinkedHashSet<>(),
-                    reachedApplicationMethods);
-            return;
-        }
-
-        for (MethodKey invokedMethod : testCalls.getOrDefault(method, Set.of())) {
-            traceTestMethod(
-                    invokedMethod,
-                    testCalls,
-                    applicationMethods,
-                    applicationCalls,
-                    visitedTestMethods,
-                    reachedApplicationMethods);
+                    visitedApplicationMethods,
+                    reachedApplicationMethods,
+                    affectedMethods,
+                    pathsByAffectedMethod,
+                    testPath);
+        } else {
+            testPath.add(method.owner().replace('/', '.') + "#" + method.name());
+            for (MethodKey invokedMethod : testCalls.getOrDefault(method, Set.of())) {
+                traceTestMethod(
+                        invokedMethod,
+                        testCalls,
+                        applicationMethods,
+                        applicationCalls,
+                        visitedTestMethods,
+                        reachedApplicationMethods,
+                        testPath,
+                        visitedApplicationMethods,
+                        affectedMethods,
+                        pathsByAffectedMethod);
+            }
+            testPath.remove(testPath.size() - 1);
         }
     }
 
@@ -1386,15 +1437,44 @@ public final class JacocoMethodTestMapper {
             Map<String, Set<String>> applicationCalls,
             Set<String> visited,
             Set<String> reachedApplicationMethods) {
+        traceApplicationMethod(method, applicationCalls, visited,
+                reachedApplicationMethods, Set.of(), new LinkedHashMap<>(),
+                new ArrayList<>());
+    }
+
+    private static void traceApplicationMethod(
+            String method,
+            Map<String, Set<String>> applicationCalls,
+            Set<String> visited,
+            Set<String> reachedApplicationMethods,
+            Set<String> affectedMethods,
+            Map<String, List<String>> pathsByAffectedMethod,
+            List<String> path) {
 
         if (!visited.add(method)) {
             return;
         }
 
+        path.add(method);
         reachedApplicationMethods.add(method);
+        if (affectedMethods.contains(method)) {
+            pathsByAffectedMethod.putIfAbsent(method, List.copyOf(path));
+        }
         for (String callee : applicationCalls.getOrDefault(method, Set.of())) {
-            traceApplicationMethod(
-                    callee, applicationCalls, visited, reachedApplicationMethods);
+            traceApplicationMethod(callee, applicationCalls, visited,
+                    reachedApplicationMethods, affectedMethods,
+                    pathsByAffectedMethod, path);
+        }
+        path.remove(path.size() - 1);
+        visited.remove(method);
+    }
+
+    public record TestCallPath(
+            String testId, String affectedMethod, List<String> methods) {
+        public TestCallPath {
+            testId = testId == null ? "" : testId;
+            affectedMethod = affectedMethod == null ? "" : affectedMethod;
+            methods = methods == null ? List.of() : List.copyOf(methods);
         }
     }
 
@@ -1690,7 +1770,9 @@ public final class JacocoMethodTestMapper {
             List<DependencyGraphResult.AffectedMethodTestGroup> groupedSelectedTests,
             List<String> failures,
             List<DependencyGraphResult.TestCoverageStatus> testCoverageStatuses,
-            String selectionNote) {
+            String selectionNote,
+            List<TestCallPath> callPaths,
+            Integer availableTestCount) {
 
         public CoverageResult(
                 List<DependencyGraphResult.MethodTestCoverage> methodTestCoverage,
@@ -1699,7 +1781,18 @@ public final class JacocoMethodTestMapper {
                 List<String> failures,
                 String selectionNote) {
             this(methodTestCoverage, selectedTests, groupedSelectedTests,
-                    failures, List.of(), selectionNote);
+                    failures, List.of(), selectionNote, List.of(), null);
+        }
+
+        public CoverageResult(
+                List<DependencyGraphResult.MethodTestCoverage> methodTestCoverage,
+                List<String> selectedTests,
+                List<DependencyGraphResult.AffectedMethodTestGroup> groupedSelectedTests,
+                List<String> failures,
+                List<DependencyGraphResult.TestCoverageStatus> testCoverageStatuses,
+                String selectionNote) {
+            this(methodTestCoverage, selectedTests, groupedSelectedTests,
+                    failures, testCoverageStatuses, selectionNote, List.of(), null);
         }
 
         public CoverageResult {
@@ -1713,6 +1806,9 @@ public final class JacocoMethodTestMapper {
             testCoverageStatuses = testCoverageStatuses == null
                     ? List.of() : List.copyOf(testCoverageStatuses);
             selectionNote = selectionNote == null ? "" : selectionNote;
+            callPaths = callPaths == null ? List.of() : List.copyOf(callPaths);
+            availableTestCount = availableTestCount == null
+                    ? null : Math.max(0, availableTestCount);
         }
     }
 }

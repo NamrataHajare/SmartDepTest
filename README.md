@@ -69,6 +69,78 @@ mvn compile
 java -Dsmartdeptest.git.timeout.seconds=300 -cp target/classes smartdeptest.Main C:\path\to\target-application
 ```
 
+## VS Code impact-report extension
+
+The `extension` directory contains a VS Code extension that launches the same
+Java analysis engine. It does not substitute mock data or run a second analysis
+implementation. The original interactive CLI remains available as described
+above.
+
+The structured engine entry point can also be invoked without VS Code:
+
+```powershell
+mvn package
+java -cp target/classes smartdeptest.Main --json C:\temp\smartdeptest-impact.json C:\path\to\maven-git-project
+```
+
+The JSON report uses schema version 1 and includes the dependency/API graph,
+affected methods, selected tests with available source/call-path evidence,
+test-selection diagnostics and an explicitly absent baseline when no baseline
+data was supplied.
+
+### Build and package
+
+Requirements:
+
+- JDK 21 or newer and Maven (already required by the analyzer).
+- Node.js 20 or newer with npm.
+- VS Code 1.85 or newer.
+
+From the repository root, first build the Java engine and runtime libraries,
+then compile and package the extension:
+
+```powershell
+mvn package
+Set-Location extension
+npm install
+npm test
+npm run compile
+npm run package
+```
+
+The VS Code prepublish hook copies the built application JAR and runtime
+dependencies from `target` into `extension\engine` before creating the
+`.vsix`. Install the resulting `smartdeptest-impact-1.0.0.vsix` from VS Code's
+**Extensions: Install from VSIX...** command. Do not commit the generated
+`extension\engine` contents or `.vsix`; rebuild them from the Maven outputs.
+
+### Run and debug
+
+Open a Maven Git repository in VS Code and run **SmartDepTest: Analyze
+Dependency Impact** from the Command Palette. For a multi-root workspace, pick
+the Maven project to analyze. The extension requires a root `pom.xml`, invokes
+the packaged Java engine with a structured JSON-output option, reports Maven,
+Git, API-comparison and test-mapping failures, and opens the impact report in a
+Webview. Configure `smartdeptest.javaExecutable` if `java` is not on `PATH`, or
+`smartdeptest.analysisTimeoutMinutes` for large projects. For extension
+development, open `extension` in VS Code, run `npm install`, use **Run
+Extension** (F5), and invoke the same command in the Extension Development
+Host.
+
+The Webview initially shows at most three selected tests; **Show all N tests**
+expands the full deduplicated selection. Source links are emitted only when a
+matching project source file was found. A missing line number opens the file
+without a selection. **Download Report** saves a self-contained HTML report
+with every selected test and escaped dynamic content.
+
+The selection is static bytecode call-path evidence, not runtime coverage.
+When the engine cannot retain a test-to-method mapping it explains that
+limitation in the report. Source lines are best-effort Java declaration
+locations; unknown locations remain unset. This repository does not implement
+an RTS baseline or per-test runtime coverage, so comparison results are omitted
+unless a future engine version supplies real baseline data. A missing baseline
+is never treated as an executed comparison.
+
 ## Pipeline guides
 
 - [Architecture guide](docs/architecture/README.md): dependency detection, ASM API comparison, bytecode analysis, and report responsibilities.
