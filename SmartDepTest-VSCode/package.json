@@ -1,0 +1,87 @@
+{
+  "name": "smartdeptest-vscode",
+  "displayName": "SmartDepTest",
+  "description": "VS Code extension for running SmartDepTest against a Maven Git project.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:smartdeptest.sidebar",
+    "onCommand:smartdeptest.startAnalysis",
+    "onCommand:smartdeptest.openSidebar"
+  ],
+  "main": "./dist/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "smartdeptest.startAnalysis",
+        "title": "Start Analysis",
+        "category": "SmartDepTest"
+      },
+      {
+        "command": "smartdeptest.openSidebar",
+        "title": "Open SmartDepTest Sidebar",
+        "category": "SmartDepTest"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "smartdeptest",
+          "title": "SmartDepTest",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "smartdeptest": [
+        {
+          "id": "smartdeptest.sidebar",
+          "type": "webview",
+          "name": "SmartDepTest"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SmartDepTest",
+      "properties": {
+        "smartDepTest.componentPath": {
+          "type": "string",
+          "default": "../SmartDepTest",
+          "description": "Absolute or workspace-relative path to the existing SmartDepTest Java project directory."
+        },
+        "smartDepTest.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional target Maven Git project to analyze. If blank, the current workspace folder or an open dialog will be used."
+        },
+        "smartDepTest.javaPath": {
+          "type": "string",
+          "default": "java",
+          "description": "Java executable to use for SmartDepTest execution. Use the full path if 'java' is not on PATH."
+        },
+        "smartDepTest.timeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Timeout in milliseconds for each SmartDepTest run."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "test": "npm run compile && node --test dist/src/test/*.test.js",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.2",
+    "typescript": "^5.7.2"
+  }
+}
