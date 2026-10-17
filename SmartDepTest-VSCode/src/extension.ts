@@ -15,8 +15,12 @@ let activeProcess: { kill: (signal?: NodeJS.Signals | number) => boolean } | und
 let activeRunCancelled = false;
 let currentStatusText = 'Ready';
 let currentProjectPath = '';
+let outputChannel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  outputChannel = vscode.window.createOutputChannel('SmartDepTest');
+  context.subscriptions.push(outputChannel);
+
   const provider = new SmartDepTestViewProvider(
     context.extensionUri,
     () => getSidebarState(),
@@ -130,12 +134,46 @@ async function startAnalysis(refresh: () => void): Promise<void> {
   activeRunId = run.id;
   activeRunCancelled = false;
   currentSelectedRunId = run.id;
+  outputChannel?.clear();
+  outputChannel?.appendLine(`Starting analysis of ${projectPath}`);
+  outputChannel?.appendLine(`SmartDepTest component: ${componentPath}`);
+  outputChannel?.show(true);
   refresh();
+  let refreshTimer: NodeJS.Timeout | undefined;
+  const scheduleRefresh = (): void => {
+    if (refreshTimer) {
+      return;
+    }
+
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      refresh();
+    }, 300);
+  };
 
   const result = await executeSmartDepTest(componentPath, projectPath, settings.javaPath, settings.timeoutMs, (child) => {
     activeProcess = child;
     refresh();
+  }, (stream, chunk) => {
+    const currentRun = history.getById(run.id);
+    if (!currentRun) {
+      return;
+    }
+
+    if (stream === 'stdout') {
+      currentRun.stdout += chunk;
+      outputChannel?.append(chunk);
+    } else {
+      currentRun.stderr += chunk;
+      outputChannel?.append(`[stderr] ${chunk}`);
+    }
+    currentRun.report = buildFinalReport(currentRun);
+    currentStatusText = `Running analysis for ${projectPath} — received ${currentRun.stdout.length.toLocaleString()} stdout and ${currentRun.stderr.length.toLocaleString()} stderr characters`;
+    scheduleRefresh();
   });
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+  }
   const finalStatus: AnalysisRun['status'] = activeRunCancelled || result.status === 'cancelled'
     ? 'cancelled'
     : result.status === 'success'

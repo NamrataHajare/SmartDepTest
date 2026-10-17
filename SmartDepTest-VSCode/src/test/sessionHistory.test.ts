@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { SessionHistory } from '../history/sessionHistory';
 import { validateComponentInstallation } from '../wrapper/smartDepTestRunner';
 
-const componentPath = path.resolve(__dirname, '../../../../SmartDepTest');
+const componentPath = path.resolve(__dirname, '../../../../');
 
 test('SessionHistory stores multiple distinct runs without overwriting earlier ones', () => {
   const history = new SessionHistory();

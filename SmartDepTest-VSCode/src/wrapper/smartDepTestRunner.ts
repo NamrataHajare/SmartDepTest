@@ -21,6 +21,8 @@ export interface SmartDepTestExecutionResult {
   artifactWarnings: string[];
 }
 
+export type ExecutionOutputStream = 'stdout' | 'stderr';
+
 type JsonReportName = 'smartdeptest-impact-graph.json' | 'smartdeptest-coverage-selection.json';
 
 interface FileMetadata {
@@ -165,6 +167,7 @@ export async function executeSmartDepTest(
   javaPath: string,
   timeoutMs: number,
   onProcessCreated?: (child: ChildProcess) => void,
+  onOutput?: (stream: ExecutionOutputStream, chunk: string) => void,
 ): Promise<SmartDepTestExecutionResult> {
   const validation = validateComponentInstallation(componentPath);
   if (!validation.isValid) {
@@ -219,11 +222,15 @@ export async function executeSmartDepTest(
     }, timeoutMs);
 
     child.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      onOutput?.('stdout', text);
     });
 
     child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      onOutput?.('stderr', text);
     });
 
     child.on('error', (error) => {

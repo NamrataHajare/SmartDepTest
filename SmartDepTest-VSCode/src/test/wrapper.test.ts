@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { captureUpdatedJsonReports, getJsonReportMetadata, resolveProjectRoot, validateComponentInstallation } from '../wrapper/smartDepTestRunner';
+import { captureUpdatedJsonReports, executeSmartDepTest, getJsonReportMetadata, resolveProjectRoot, validateComponentInstallation } from '../wrapper/smartDepTestRunner';
 
 test('resolveProjectRoot falls back to the workspace path when configured project path is empty', () => {
   const fallback = 'C:/repo/fallback';
@@ -54,4 +54,20 @@ test('captureUpdatedJsonReports does not reuse stale JSON from a prior run', () 
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
   }
+});
+
+test('executeSmartDepTest streams process output as it arrives', async () => {
+  const chunks: string[] = [];
+  const missingProject = path.join(os.tmpdir(), `smartdeptest-missing-project-${Date.now()}`);
+  const result = await executeSmartDepTest(
+    path.resolve(__dirname, '../../../../'),
+    missingProject,
+    'java',
+    15000,
+    undefined,
+    (_stream, chunk) => chunks.push(chunk),
+  );
+
+  assert.ok(result.stdout.includes('ERROR:'));
+  assert.ok(chunks.join('').includes('ERROR:'));
 });
