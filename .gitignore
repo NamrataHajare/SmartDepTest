@@ -3,3 +3,5 @@ target/
 .idea/
 .vscode/
 *.log
+
+SmartDepTest-VSCode/node_modules/
