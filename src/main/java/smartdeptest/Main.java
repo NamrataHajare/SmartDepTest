@@ -123,7 +123,7 @@ final class SmartDepTestRunner {
             DependencyGraphResult graph = new DependencyGraphBuilder().build(apiChanges, usage);
             Path graphOutput = project.toAbsolutePath().normalize()
                     .resolve("target/smartdeptest-impact-graph.json");
-            new DependencyGraphJsonExporter().write(graph, graphOutput);
+            new DependencyGraphJsonExporter().write(graph, graphOutput, project);
             printCallGraphAndPropagation(graph, graphOutput);
             printCoverageAndRegressionSelection(graph, project);
             printSection("Execution time");
@@ -268,15 +268,6 @@ final class SmartDepTestRunner {
     }
 
     private static void printCoverageAndRegressionSelection(DependencyGraphResult result, Path project) {
-        if (result.allAffectedMethods().isEmpty()) {
-            printSection("Regression test identification");
-            printTable(List.of("Metric", "Value"), List.of(
-                    List.of("Unique affected application methods", "0"),
-                    List.of("Test-selection status", "Skipped"),
-                    List.of("Reason", "No affected application methods were available.")));
-            return;
-        }
-
         printSection("Regression test identification");
         try {
             JacocoMethodTestMapper mapper = new JacocoMethodTestMapper();
@@ -332,9 +323,10 @@ final class SmartDepTestRunner {
                     coverage.groupedSelectedTests(),
                     coverage.testCoverageStatuses(),
                     result.analysisSummary(),
-                    result.analysisDiagnostics());
+                    result.analysisDiagnostics(),
+                    coverage.selectionNote());
             Path coverageOutput = project.toAbsolutePath().normalize().resolve("target/smartdeptest-coverage-selection.json");
-            new DependencyGraphJsonExporter().write(enriched, coverageOutput);
+            new DependencyGraphJsonExporter().write(enriched, coverageOutput, project);
             System.out.println("Coverage JSON: " + coverageOutput);
         } catch (IOException exception) {
             String message = exception.getMessage();

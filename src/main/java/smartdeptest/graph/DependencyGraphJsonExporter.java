@@ -6,9 +6,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.Map;
+import smartdeptest.analysis.JavaSourceLocationResolver;
 
 public final class DependencyGraphJsonExporter {
     public String toJson(DependencyGraphResult result) {
+        return toJson(result, null);
+    }
+
+    public String toJson(DependencyGraphResult result, Path projectDirectory) {
         StringBuilder json = new StringBuilder();
         json.append("{\"nodes\":[");
         appendSeparated(json, result.graph().getNodes().iterator(), node -> {
@@ -139,13 +144,46 @@ public final class DependencyGraphJsonExporter {
             });
             json.append(']');
         }
+        String selectionNote = result.groupedSelectedTests().stream()
+                .map(DependencyGraphResult.AffectedMethodTestGroup::selectionNote)
+                .filter(note -> !note.isBlank())
+                .findFirst()
+                .orElse(result.testSelectionNote());
+        if (!selectionNote.isBlank()) {
+            json.append(",\"testSelectionNote\":");
+            appendValue(json, selectionNote);
+        }
+        if (projectDirectory != null) {
+            try {
+                JavaSourceLocationResolver resolver = new JavaSourceLocationResolver();
+                var classLocations = resolver.applicationClassLocations(projectDirectory, result);
+                var methodLocations = resolver.applicationMethodLocations(projectDirectory, result);
+                var testLocations = resolver.testCaseLocations(projectDirectory, result);
+                json.append(",\"applicationClassLocations\":");
+                appendValue(json, classLocations);
+                json.append(",\"applicationMethodLocations\":");
+                appendValue(json, methodLocations);
+                json.append(",\"testCaseLocations\":");
+                appendValue(json, testLocations);
+            } catch (IOException exception) {
+                json.append(",\"sourceLocationResolutionError\":");
+                appendValue(json, exception.getMessage() == null
+                        ? exception.getClass().getSimpleName() : exception.getMessage());
+                json.append(",\"applicationClassLocations\":[],\"applicationMethodLocations\":[],"
+                        + "\"testCaseLocations\":[]");
+            }
+        }
         return json.append('}').toString();
     }
 
     public void write(DependencyGraphResult result, Path output) throws IOException {
+        write(result, output, null);
+    }
+
+    public void write(DependencyGraphResult result, Path output, Path projectDirectory) throws IOException {
         Path parent = output.toAbsolutePath().normalize().getParent();
         if (parent != null) Files.createDirectories(parent);
-        Files.writeString(output, toJson(result), StandardCharsets.UTF_8);
+        Files.writeString(output, toJson(result, projectDirectory), StandardCharsets.UTF_8);
     }
 
     private static <T> void appendSeparated(StringBuilder json, Iterator<T> items,

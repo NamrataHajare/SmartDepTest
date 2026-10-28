@@ -87,6 +87,27 @@ class JacocoMethodTestMapperTest {
     }
 
     @Test
+    void retainsReportedTestsWhenNoAffectedApplicationMethodWasIdentified() throws Exception {
+        Files.writeString(temporaryDirectory.resolve("pom.xml"),
+                "<project><modules/></project>", StandardCharsets.UTF_8);
+        Path reports = temporaryDirectory.resolve("target/surefire-reports");
+        Files.createDirectories(reports);
+        Files.writeString(reports.resolve("TEST-demo.FeatureTest.xml"),
+                "<testsuite name=\"demo.FeatureTest\"><testcase classname=\"demo.FeatureTest\" "
+                        + "name=\"coversService\"/></testsuite>", StandardCharsets.UTF_8);
+
+        JacocoMethodTestMapper.CoverageResult coverage = new JacocoMethodTestMapper()
+                .map(temporaryDirectory, new DependencyGraphResult(
+                        new DependencyGraph(), List.of(), List.of()));
+
+        assertTrue(coverage.groupedSelectedTests().isEmpty());
+        assertTrue(coverage.methodTestCoverage().isEmpty());
+        assertEquals(1, coverage.testCoverageStatuses().size());
+        assertTrue(coverage.selectionNote().contains("No affected application method was identified"));
+        assertTrue(coverage.selectionNote().contains("No regression test is selected"));
+    }
+
+    @Test
     void mapsInheritedJUnit3TestsAcrossModulesAndCustomTestOutputPaths() throws Exception {
         Path appModule = temporaryDirectory.resolve("app");
         Path testsModule = temporaryDirectory.resolve("tests");

@@ -1,7 +1,8 @@
-target/
-*.class
+target
 .idea/
 .vscode/
 *.log
 
+node_modules/
+**/node_modules/
 SmartDepTest-VSCode/node_modules/

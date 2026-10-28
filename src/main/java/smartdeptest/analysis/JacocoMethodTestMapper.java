@@ -88,13 +88,20 @@ public final class JacocoMethodTestMapper {
                             + projectDirectory);
         }
 
-        if (affectedMethods == null || affectedMethods.isEmpty()) {
-            return new CoverageResult(
-                    List.of(), List.of(), List.of(), List.of(), List.of(), "");
-        }
-
         Path root = projectDirectory.toAbsolutePath().normalize();
         List<Path> modules = discoverModules(root);
+        if (affectedMethods == null || affectedMethods.isEmpty()) {
+            CoverageResult reportedTests = legacyCoverageStatus(
+                    modules, List.of(), List.of(), List.of());
+            return new CoverageResult(
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    reportedTests.failures(),
+                    reportedTests.testCoverageStatuses(),
+                    "No affected application method was identified. Test report entries are shown "
+                            + "without method-to-test attribution. " + TEST_SELECTION_UNAVAILABLE);
+        }
 
         if (applicationGraph == null) {
             return legacyCoverageStatus(
